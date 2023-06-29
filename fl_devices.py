@@ -189,10 +189,27 @@ class Client(FederatedTrainingDevice):
 
 
 class Server(FederatedTrainingDevice):
-    def __init__(self, model_fn, data):
+    def __init__(self, model_fn, data): #teacher_model):
         super().__init__(model_fn, data)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False)
         self.model_cache = []
+        # initialize teacher model
+        #self.teacher_model = teacher_model
+
+    # method to generate distillation data
+    def make_distillation_data(self):
+        # use teacher model to make predictions
+        self.teacher_model.eval()  # set teacher model to eval mode
+        with torch.no_grad():
+            all_outputs = []
+            for data, _ in self.loader:
+                output = self.teacher_model(data)
+                all_outputs.append(output)
+
+        all_outputs = torch.cat(all_outputs, dim=0)
+        # apply softmax to convert to probabilities
+        teacher_probs = torch.softmax(all_outputs, dim=1)
+        return teacher_probs
 
     def evaluate(self, model):
         (
