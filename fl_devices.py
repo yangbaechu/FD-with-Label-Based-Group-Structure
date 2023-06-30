@@ -10,8 +10,11 @@ import torch.nn as nn
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def train_op(model, loader, optimizer, epochs=1):
+def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
     model.train()
+
+    criterion = torch.nn.CrossEntropyLoss()
+    
     for ep in range(epochs):
         running_loss, samples = 0.0, 0
         for x, y in loader:
@@ -19,15 +22,28 @@ def train_op(model, loader, optimizer, epochs=1):
 
             optimizer.zero_grad()
 
-            loss = torch.nn.CrossEntropyLoss()(model(x), y)
-            running_loss += loss.item() * y.shape[0]
+            outputs = model(x)
+            loss = criterion(outputs, y)
+            
+            # Check if loss is valid
+            if torch.isnan(loss).any() or torch.isinf(loss).any():
+                raise ValueError("Loss is NaN or Infinity. Check your model and training parameters.")
+                
+            running_loss += loss.detach().item() * y.shape[0]
             samples += y.shape[0]
 
             loss.backward()
-            optimizer.step()
-        # print(f"running_loss: {running_loss}")
-        # print(f"samples:{samples}")
 
+            # Optionally apply gradient clipping
+            if grad_clip:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+            optimizer.step()
+
+    # Switch back to evaluation mode
+    model.eval()
+    # print(f"running_loss: {running_loss}")
+    # print(f"samples:{samples}")
     return running_loss / samples
 
 
@@ -155,12 +171,15 @@ class FederatedTrainingDevice(object):
 
 class Client(FederatedTrainingDevice):
     def __init__(
-        self, model_fn, optimizer_fn, data, idnum, batch_size=128, train_frac=0.7
+        self, model_fn, optimizer_fn, data, teacher_data, idnum, batch_size=128, train_frac=0.7
     ):
         super().__init__(model_fn, data)
+        
+        self.model = model_fn().to(device)
         self.optimizer = optimizer_fn(self.model.parameters())
-
+        self.teacher_data = teacher_data
         self.data = data
+        
         n_train = int(len(data) * train_frac)
         n_eval = len(data) - n_train
 
@@ -187,14 +206,20 @@ class Client(FederatedTrainingDevice):
     def compute_weight_update(self, epochs=1, loader=None):
         copy(target=self.W_old, source=self.W)
         self.optimizer.param_groups[0]["lr"] *= 0.99
-        train_stats = train_op(
-            self.model,
-            self.train_loader if not loader else loader,
-            self.optimizer,
-            epochs,
-        )
+
+        # Ensure model is in train mode and gradients are enabled
+        self.model.train()
+        with torch.set_grad_enabled(True):
+            train_stats = train_op(
+                self.model,
+                self.train_loader if not loader else loader,
+                self.optimizer,
+                epochs,
+            )
+
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return train_stats
+
 
     def reset(self):
         copy(target=self.W, source=self.W_original)
@@ -204,34 +229,44 @@ class Client(FederatedTrainingDevice):
 class Server(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
-        self.loader = DataLoader(self.data, batch_size=128, shuffle=False)
+        self.model = model_fn().to(device)
+        self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
+
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
-        
 
     # method to generate distillation data
     def make_distillation_data(self):
-        
-        train_op(
-            self.model,
-            self.loader,
-            self.optimizer,
-            40,
-        )
-        
+        self.model.train()  # set the model to training mode
+        criterion = torch.nn.CrossEntropyLoss()  # define the loss function
+
+        for epoch in range(40):  # run for 40 epochs
+            for inputs, labels in self.loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                self.optimizer.zero_grad()  # clear the gradients
+                outputs = self.model(inputs)  # forward pass
+                loss = criterion(outputs, labels)  # compute loss
+                loss.backward()  # backward pass
+                self.optimizer.step()  # update the weights
+                
         # use teacher model to make predictions
         self.model.eval()  # set teacher model to eval mode
+        all_outputs = []
+        all_inputs = []
         with torch.no_grad():
-            all_outputs = []
             for data, _ in self.loader:
-                data = data.cuda()
+                data = data.to(device)
                 output = self.model(data)
                 all_outputs.append(output)
+                all_inputs.append(data)
 
         all_outputs = torch.cat(all_outputs, dim=0)
+        all_inputs = torch.cat(all_inputs, dim=0)
         # apply softmax to convert to probabilities
         teacher_probs = torch.softmax(all_outputs, dim=1)
-        return teacher_probs
+        return all_inputs, teacher_probs
+
+
 
     def evaluate(self, model):
         (
