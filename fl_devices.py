@@ -5,10 +5,10 @@ import numpy as np
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
-
+import torch.nn.functional as F
+import torch.nn as nn
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
 
 def train_op(model, loader, optimizer, epochs=1):
     model.train()
@@ -47,9 +47,21 @@ def eval_op(model, loader):
 
     return correct / samples
 
+class DistillationLoss(nn.Module):
+    def __init__(self, alpha=0.5, T=2.0):
+        super(DistillationLoss, self).__init__()
+        self.alpha = alpha
+        self.T = T
 
-import torch.nn.functional as F
-
+    def forward(self, student_outputs, labels, teacher_outputs):
+        hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
+        soft_loss = self.alpha * F.kl_div(
+            F.log_softmax(student_outputs / self.T, dim=1),
+            F.softmax(teacher_outputs / self.T, dim=1),
+            reduction="batchmean",
+        )
+        return hard_loss + soft_loss
+    
 
 def eval_for_server(model, loader):
     model.eval()
@@ -188,22 +200,32 @@ class Client(FederatedTrainingDevice):
         copy(target=self.W, source=self.W_original)
 
 
+
 class Server(FederatedTrainingDevice):
-    def __init__(self, model_fn, data): #teacher_model):
+    def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False)
         self.model_cache = []
-        # initialize teacher model
-        #self.teacher_model = teacher_model
+        self.optimizer = optimizer_fn(self.model.parameters())
+        
 
     # method to generate distillation data
     def make_distillation_data(self):
+        
+        train_op(
+            self.model,
+            self.loader,
+            self.optimizer,
+            40,
+        )
+        
         # use teacher model to make predictions
-        self.teacher_model.eval()  # set teacher model to eval mode
+        self.model.eval()  # set teacher model to eval mode
         with torch.no_grad():
             all_outputs = []
             for data, _ in self.loader:
-                output = self.teacher_model(data)
+                data = data.cuda()
+                output = self.model(data)
                 all_outputs.append(output)
 
         all_outputs = torch.cat(all_outputs, dim=0)

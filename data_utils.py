@@ -101,7 +101,7 @@ def generate_server_idcs(test_idcs, test_labels, n_class=10):
     """
 
     server_idcs = []
-    data_per_class = 10
+    data_per_class = 100
 
     class_idcs = [np.where(test_labels == c)[0].tolist() for c in range(n_class)]
 
