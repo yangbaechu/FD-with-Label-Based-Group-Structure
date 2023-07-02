@@ -195,9 +195,12 @@ class Client(FederatedTrainingDevice):
         self.data = data
         n_train = int(len(data) * train_frac)
         n_eval = len(data) - n_train
-
+        
+        print(f'data length: {len(data)}')
+        print(f'distillation data length: {len(distill_data)}')
+        
         data_train, data_eval = torch.utils.data.random_split(self.data, [n_train, n_eval])
-
+        
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
 
