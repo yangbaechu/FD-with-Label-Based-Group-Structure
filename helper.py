@@ -29,13 +29,11 @@ def display_train_stats(cfl_stats, eps_1, eps_2, communication_rounds):
         for s in cfl_stats.split:
             plt.axvline(x=s, linestyle="-", color="k", label=r"Split")
 
-    plt.text(
-        x=communication_rounds,
-        y=1,
-        ha="right",
-        va="top",
-        s="Clusters: {}".format([x.tolist() for x in cfl_stats.clusters[-1]]),
-    )
+    # plt.text(
+    #     x=communication_rounds,
+    #     y=0,
+    #     s=f'acc afeter distillation: {round(acc_after_distill, 3)}, final acc: {round(acc_mean[-1], 3)}',
+    # )
 
     plt.xlabel("Communication Rounds")
     plt.ylabel("Accuracy")
@@ -73,4 +71,4 @@ def display_train_stats(cfl_stats, eps_1, eps_2, communication_rounds):
 
     plt.show()
 
-    print(f"accuracy: {round(acc_mean[-1], 3)}")#communication cost: {cfl_stats.mean_norm[-1]}, 
+    #print(f"acc after distill: {round(acc_after_distill, 3)}, final acc: {round(acc_mean[-1], 3)}")#communication cost: {cfl_stats.mean_norm[-1]}, 
