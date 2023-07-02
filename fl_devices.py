@@ -7,6 +7,8 @@ from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
 import torch.nn.functional as F
 import torch.nn as nn
+from torch.utils.data import TensorDataset
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -169,54 +171,86 @@ class FederatedTrainingDevice(object):
         return eval_op(self.model, self.eval_loader if not loader else loader)
 
 
+class DistillationLoss(nn.Module):
+    def __init__(self, alpha=0.5, T=2.0):
+        super(DistillationLoss, self).__init__()
+        self.alpha = alpha
+        self.T = T
+
+    def forward(self, student_outputs, labels, teacher_outputs):
+        hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
+        soft_loss = self.alpha * F.kl_div(
+            F.log_softmax(student_outputs / self.T, dim=1),
+            F.softmax(teacher_outputs / self.T, dim=1),
+            reduction="batchmean",
+        )
+        return hard_loss + soft_loss
+
+
 class Client(FederatedTrainingDevice):
-    def __init__(
-        self, model_fn, optimizer_fn, data, teacher_data, idnum, batch_size=128, train_frac=0.7
-    ):
+    def __init__(self, model_fn, optimizer_fn, data, idnum, distill_data=None, batch_size=128, train_frac=0.7):
         super().__init__(model_fn, data)
-        
-        self.model = model_fn().to(device)
         self.optimizer = optimizer_fn(self.model.parameters())
-        self.teacher_data = teacher_data
+
         self.data = data
-        
         n_train = int(len(data) * train_frac)
         n_eval = len(data) - n_train
 
-        data_train, data_eval = torch.utils.data.random_split(
-            self.data, [n_train, n_eval]
-        )
+        data_train, data_eval = torch.utils.data.random_split(self.data, [n_train, n_eval])
 
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
 
+        if distill_data:
+            self.distill_data = TensorDataset(*distill_data)  # assuming distill_data is a tuple (inputs, teacher_probs)
+            self.distill_loader = DataLoader(self.distill_data, batch_size=batch_size, shuffle=True)
+            
+        else:
+            self.distill_data = None
+            self.distill_loader = None
+
         self.id = idnum
 
-        self.dW = {
-            key: torch.zeros_like(value) for key, value in self.model.named_parameters()
-        }
-        self.W_old = {
-            key: torch.zeros_like(value) for key, value in self.model.named_parameters()
-        }
+        self.dW = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
+        self.W_old = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
+
+        self.loss_fn = DistillationLoss()
+
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
 
-    def compute_weight_update(self, epochs=1, loader=None):
+    def compute_weight_update(self, epochs=1, distill_epochs=1, loader=None):
         copy(target=self.W_old, source=self.W)
+
+        # Distillation training
+        if self.distill_loader is not None:
+            for ep in range(distill_epochs):
+                running_loss, samples = 0.0, 0
+                for x, y, teacher_y in self.distill_loader:
+                    x, y, teacher_y = x.to(device), y.to(device), teacher_y.to(device)
+
+                    self.optimizer.zero_grad()
+
+                    outputs = self.model(x)
+                    loss = self.loss_fn(outputs, y, teacher_y)
+
+                    running_loss += loss.detach().item() * y.shape[0]
+                    samples += y.shape[0]
+
+                    loss.backward()
+
+                    self.optimizer.step()
+
+        # Regular training
         self.optimizer.param_groups[0]["lr"] *= 0.99
-
-        # Ensure model is in train mode and gradients are enabled
-        self.model.train()
-        with torch.set_grad_enabled(True):
-            train_stats = train_op(
-                self.model,
-                self.train_loader if not loader else loader,
-                self.optimizer,
-                epochs,
-            )
-
+        train_stats = train_op(
+            self.model,
+            self.train_loader if not loader else loader,
+            self.optimizer,
+            epochs,
+        )
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return train_stats
 
@@ -248,23 +282,29 @@ class Server(FederatedTrainingDevice):
                 loss = criterion(outputs, labels)  # compute loss
                 loss.backward()  # backward pass
                 self.optimizer.step()  # update the weights
-                
+
         # use teacher model to make predictions
         self.model.eval()  # set teacher model to eval mode
         all_outputs = []
         all_inputs = []
+        all_labels = []
         with torch.no_grad():
-            for data, _ in self.loader:
-                data = data.to(device)
+            for data, labels in self.loader:
+                data, labels = data.to(device), labels.to(device)
                 output = self.model(data)
                 all_outputs.append(output)
                 all_inputs.append(data)
+                all_labels.append(labels)
 
         all_outputs = torch.cat(all_outputs, dim=0)
         all_inputs = torch.cat(all_inputs, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
         # apply softmax to convert to probabilities
         teacher_probs = torch.softmax(all_outputs, dim=1)
-        return all_inputs, teacher_probs
+
+        distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
+        return distill_data  # return distill_data instead of individual arrays
+
 
 
 
