@@ -73,4 +73,4 @@ def display_train_stats(cfl_stats, eps_1, eps_2, communication_rounds):
 
     plt.show()
 
-    print(f"communication cost: {cfl_stats.mean_norm[-1]}, accuracy: {acc_mean[-1]}")
+    print(f"accuracy: {round(acc_mean[-1], 3)}")#communication cost: {cfl_stats.mean_norm[-1]}, 

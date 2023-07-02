@@ -221,12 +221,12 @@ class Client(FederatedTrainingDevice):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
 
-    def compute_weight_update(self, epochs=1, distill_epochs=1, loader=None):
+    def distill(self, epochs=40):
         copy(target=self.W_old, source=self.W)
 
         # Distillation training
         if self.distill_loader is not None:
-            for ep in range(distill_epochs):
+            for ep in range(epochs):
                 running_loss, samples = 0.0, 0
                 for x, y, teacher_y in self.distill_loader:
                     x, y, teacher_y = x.to(device), y.to(device), teacher_y.to(device)
@@ -243,6 +243,12 @@ class Client(FederatedTrainingDevice):
 
                     self.optimizer.step()
 
+        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+        return
+        
+    def compute_weight_update(self, epochs=1, loader=None):
+        copy(target=self.W_old, source=self.W)
+        
         # Regular training
         self.optimizer.param_groups[0]["lr"] *= 0.99
         train_stats = train_op(
@@ -269,12 +275,12 @@ class Server(FederatedTrainingDevice):
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
 
-    # method to generate distillation data
-    def make_distillation_data(self):
+   # method to generate distillation data
+    def make_distillation_data(self, data_per_class):
         self.model.train()  # set the model to training mode
         criterion = torch.nn.CrossEntropyLoss()  # define the loss function
 
-        for epoch in range(40):  # run for 40 epochs
+        for epoch in range(50):  
             for inputs, labels in self.loader:
                 inputs, labels = inputs.to(device), labels.to(device)
                 self.optimizer.zero_grad()  # clear the gradients
@@ -288,22 +294,33 @@ class Server(FederatedTrainingDevice):
         all_outputs = []
         all_inputs = []
         all_labels = []
+        class_count = {}  # keep count of examples per class
+
         with torch.no_grad():
             for data, labels in self.loader:
                 data, labels = data.to(device), labels.to(device)
                 output = self.model(data)
-                all_outputs.append(output)
-                all_inputs.append(data)
-                all_labels.append(labels)
 
-        all_outputs = torch.cat(all_outputs, dim=0)
-        all_inputs = torch.cat(all_inputs, dim=0)
-        all_labels = torch.cat(all_labels, dim=0)
+                # iterate through labels and only add those examples where count of class < 100
+                for i in range(len(labels)):
+                    label = labels[i]
+                    if label.item() not in class_count:
+                        class_count[label.item()] = 0
+                    if class_count[label.item()] < data_per_class:
+                        all_outputs.append(output[i])
+                        all_inputs.append(data[i])
+                        all_labels.append(label)
+                        class_count[label.item()] += 1
+
+        all_outputs = torch.stack(all_outputs, dim=0)
+        all_inputs = torch.stack(all_inputs, dim=0)
+        all_labels = torch.stack(all_labels, dim=0)
         # apply softmax to convert to probabilities
         teacher_probs = torch.softmax(all_outputs, dim=1)
 
         distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
         return distill_data  # return distill_data instead of individual arrays
+
 
 
 
