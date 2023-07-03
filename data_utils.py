@@ -9,22 +9,26 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients):
     alpha
     """
     n_classes = train_labels.max() + 1
-    label_distribution = np.random.dirichlet([alpha] * n_clients, n_classes)
+    label_distribution = np.random.dirichlet([alpha] * n_classes, n_clients)
 
     class_idcs = [
-        np.argwhere(train_labels[train_idcs] == y).flatten() for y in range(n_classes)
+        np.argwhere(train_labels[train_idcs] == y).flatten().tolist() for y in range(n_classes)
     ]
 
     client_idcs = [[] for _ in range(n_clients)]
-    for c, fracs in zip(class_idcs, label_distribution):
-        for i, idcs in enumerate(
-            np.split(c, (np.cumsum(fracs)[:-1] * len(c)).astype(int))
-        ):
-            client_idcs[i] += [idcs]
+    for i, fracs in enumerate(label_distribution):
+        for c_idx, frac in enumerate(fracs):
+            idcs_len = int(len(class_idcs[c_idx])*frac)
+            idcs = class_idcs[c_idx][:idcs_len]
+            client_idcs[i] += list(idcs)
+            class_idcs[c_idx] = class_idcs[c_idx][idcs_len:]
 
-    client_idcs = [train_idcs[np.concatenate(idcs)] for idcs in client_idcs]
+    client_idcs = [train_idcs[np.array(idcs)] for idcs in client_idcs]
 
     return client_idcs
+
+
+
 
 
 def split_contain_every_class(train_idcs, train_labels, n_clients, data_per_class, Imbalance_ratio):
