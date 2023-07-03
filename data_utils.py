@@ -8,26 +8,30 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients):
     into subsets according to a dirichlet distribution with parameter
     alpha
     """
-    n_classes = train_labels.max() + 1
+    n_classes = 10
     label_distribution = np.random.dirichlet([alpha] * n_classes, n_clients)
 
-    class_idcs = [
-        np.argwhere(train_labels[train_idcs] == y).flatten().tolist() for y in range(n_classes)
-    ]
-
+    class_idcs = [np.argwhere(train_labels[train_idcs] == y).flatten().tolist() for y in range(n_classes)]
+    total_data = [len(idcs) for idcs in class_idcs]
     client_idcs = [[] for _ in range(n_clients)]
-    for i, fracs in enumerate(label_distribution):
-        for c_idx, frac in enumerate(fracs):
-            idcs_len = int(len(class_idcs[c_idx])*frac)
-            idcs = class_idcs[c_idx][:idcs_len]
-            client_idcs[i] += list(idcs)
-            class_idcs[c_idx] = class_idcs[c_idx][idcs_len:]
+
+    # 모든 client에 대해
+    for i, (client, fracs) in enumerate(zip(client_idcs, label_distribution)):
+        class_per_client = []
+        client_len = []
+
+        for j, (idcs, frac) in enumerate(zip(class_idcs, fracs)):
+            idcs_len = int(total_data[j]*frac*0.25)
+            if idcs_len > len(idcs):
+                print(f'allocated data: {idcs_len}, left data: {len(idcs)}')
+            client.extend(idcs[:idcs_len])
+            client_len.append(len(client))
+            class_per_client.append(idcs_len)
+            del idcs[:idcs_len]
 
     client_idcs = [train_idcs[np.array(idcs)] for idcs in client_idcs]
-
+    
     return client_idcs
-
-
 
 
 
@@ -99,11 +103,9 @@ def split_not_contain_every_class(train_idcs, train_labels, n_clients):
     return client_idcs
 
 
-def generate_server_idcs(test_idcs, test_labels, n_class=10):
-    """
-    Generate server indices with identical label distribution as client_idcs
-    """
-
+def generate_server_idcs(test_idcs, test_labels, start_idx):
+    
+    n_class = 10
     server_idcs = []
     data_per_class = 1000
 
@@ -116,7 +118,7 @@ def generate_server_idcs(test_idcs, test_labels, n_class=10):
 
     # Convert to numpy array
     server_idcs = np.array(server_idcs)
-    server_idcs += 10000
+    server_idcs += start_idx
 
     return server_idcs
 

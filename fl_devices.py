@@ -197,7 +197,6 @@ class Client(FederatedTrainingDevice):
         n_eval = len(data) - n_train
         
         print(f'data length: {len(data)}')
-        print(f'distillation data length: {len(distill_data)}')
         
         data_train, data_eval = torch.utils.data.random_split(self.data, [n_train, n_eval])
         
@@ -304,7 +303,6 @@ class Server(FederatedTrainingDevice):
                 data, labels = data.to(device), labels.to(device)
                 output = self.model(data)
 
-                # iterate through labels and only add those examples where count of class < 100
                 for i in range(len(labels)):
                     label = labels[i]
                     if label.item() not in class_count:
