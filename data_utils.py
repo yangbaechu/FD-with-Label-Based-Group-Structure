@@ -1,6 +1,6 @@
 import numpy as np
 from torch.utils.data import Subset
-
+import math
 
 def split_noniid(train_idcs, train_labels, alpha, n_clients):
     """
@@ -15,21 +15,45 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients):
     total_data = [len(idcs) for idcs in class_idcs]
     client_idcs = [[] for _ in range(n_clients)]
 
-    # 모든 client에 대해
+   # Determine common amount of data each client should have
+    total_data_amount = sum([len(idcs) for idcs in class_idcs])
+    client_data_amount = (total_data_amount//10) // len(client_idcs)
+
     for i, (client, fracs) in enumerate(zip(client_idcs, label_distribution)):
-        class_per_client = []
-        client_len = []
+
+        # Keep track of how much data has been allocated to this client
+        allocated_data_amount = 0
 
         for j, (idcs, frac) in enumerate(zip(class_idcs, fracs)):
-            idcs_len = int(total_data[j]*frac*0.25)
-            if idcs_len > len(idcs):
-                print(f'allocated data: {idcs_len}, left data: {len(idcs)}')
+            idcs_len = int(total_data[j]*frac*0.1)
+
+            # Adjust the data length if it exceeds the remaining data that this client can receive
+            remaining_data_amount = client_data_amount - allocated_data_amount
+            if idcs_len > remaining_data_amount:
+                idcs_len = remaining_data_amount
+
+            # if idcs_len == 0:
+            #     print("no data allocated")
+            # if idcs_len > len(idcs):
+            #     print(f'allocated data: {idcs_len}, left data: {len(idcs)}')
+
             client.extend(idcs[:idcs_len])
-            client_len.append(len(client))
-            class_per_client.append(idcs_len)
+            allocated_data_amount += idcs_len
             del idcs[:idcs_len]
 
-    client_idcs = [train_idcs[np.array(idcs)] for idcs in client_idcs]
+        # If a client has not received enough data, fill it with the remaining needed data from the available class indices
+        if allocated_data_amount < client_data_amount:
+            for idcs in class_idcs:
+                remaining_data_amount = client_data_amount - allocated_data_amount
+                if remaining_data_amount <= len(idcs):
+                    client.extend(idcs[:remaining_data_amount])
+                    del idcs[:remaining_data_amount]
+                    break
+
+    # print([len(c_id) for c_id in client_idcs])
+    
+    client_idcs = [train_idcs[np.array(idcs)] for idcs in client_idcs] 
+
     
     return client_idcs
 
