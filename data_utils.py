@@ -12,6 +12,8 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients):
     label_distribution = np.random.dirichlet([alpha] * n_classes, n_clients)
 
     class_idcs = [np.argwhere(train_labels[train_idcs] == y).flatten().tolist() for y in range(n_classes)]
+    #class_idcs = [np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist() for y in range(n_classes)]
+
     total_data = [len(idcs) for idcs in class_idcs]
     client_idcs = [[] for _ in range(n_clients)]
 
