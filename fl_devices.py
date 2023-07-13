@@ -268,7 +268,8 @@ class Client(FederatedTrainingDevice):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
 
-    def distill(self, epochs=40):
+    def distill(self, distill_data, epochs=40):
+        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
         copy(target=self.W_old, source=self.W)
 
         # Distillation training
@@ -367,10 +368,55 @@ class Server(FederatedTrainingDevice):
         distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
         return distill_data  # return distill_data instead of individual arrays
 
+    def get_clients_logit(self, model, data_per_class):
+        model.eval()  # set teacher model to eval mode
+        all_outputs = []
+        all_inputs = []
+        all_labels = []
+        class_count = {}  # keep count of examples per class
+
+        with torch.no_grad():
+            for data, labels in self.loader:
+                data, labels = data.to(device), labels.to(device)
+                output = model(data)
+
+                for i in range(len(labels)):
+                    label = labels[i]
+                    if label.item() not in class_count:
+                        class_count[label.item()] = 0
+                    if class_count[label.item()] < data_per_class:
+                        all_outputs.append(output[i].unsqueeze(0))  # appending 2D tensor of shape [1, 62]
+                        all_inputs.append(data[i].unsqueeze(0))  # appending 2D tensor
+                        all_labels.append(label.unsqueeze(0))  # appending 1D tensor
+                        class_count[label.item()] += 1
+
+        # Then convert lists of tensors into single tensors
+        all_outputs = torch.cat(all_outputs, dim=0)  # you can use torch.cat again since all tensors are 2D now
+        all_inputs = torch.cat(all_inputs, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
 
 
+        # apply softmax to convert to probabilities
+        teacher_probs = torch.softmax(all_outputs, dim=1)
+        
+        # print(all_labels[0])
+        # print(teacher_probs[0])
+        
+        distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
+        return distill_data  # return distill_data instead of individual arrays
+
+    def make_averaged_logits(self, client_logits):
+        for i, logit in enumerate(client_logits):
+            if len(logit.shape) == 1 or logit.shape[1] != 10:
+                print(f"Logit {i} has incorrect shape {logit.shape}")
+
+        # Continue with averaging...
+        avg_logits = torch.mean(torch.stack(client_logits), dim=0)
+    
+        return avg_logits
 
 
+    
     def evaluate(self, model):
         (
             label_accuracies,
@@ -386,15 +432,14 @@ class Server(FederatedTrainingDevice):
             label_diff,
         )
     
-    
     def evaluate_distil(self, model):
         model.eval()  # Set model to evaluation mode
         samples, correct = 0, 0
 
         with torch.no_grad():
             for i, (x, y) in enumerate(self.loader):
-                # Evaluate only on 10% of the data
-                if i > len(self.loader) // 10:
+                # Evaluate only on 20% of the data
+                if i > len(self.loader) // 20:
                     break
 
                 x, y = x.to(device), y.to(device)
