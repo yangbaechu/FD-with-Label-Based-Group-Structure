@@ -314,14 +314,25 @@ class Client(FederatedTrainingDevice):
 
 
 
+from collections import Counter
+
 class Server(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
         self.model = model_fn().to(device)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
+        
+        # Compute the class distribution
+        labels = [label for _, label in self.data]
+        class_distribution = Counter(labels)
+
+        # Print the class distribution
+        for class_label, count in class_distribution.items():
+            print(f'Class {class_label}: {count} instances')
 
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
+
 
    # method to generate distillation data
     def make_distillation_data(self, data_per_class):

@@ -77,26 +77,29 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
         idx_batch = [[] for _ in range(n_clients)]
         for y in range(n_classes):
             idx_y = np.argwhere(train_labels[train_idcs] == y).flatten().tolist()
+            # print(f'class {y}\'s amount in client: {len(idx_y)}')
             np.random.shuffle(idx_y)
 
-            proportions = np.random.dirichlet(np.repeat(alpha, n_clients)
+            proportions = np.random.dirichlet(np.repeat(alpha, n_clients))
             # total data/client 수 초과된 client는 데이터 할당 X
             proportions = np.array([p * (len(idx_j) < total_data_amount / n_clients) for p, idx_j in zip(proportions, idx_batch)])
-            # 합이 1이 되도록 정규화
             proportions = proportions / proportions.sum()
-            #각 class가 받는 데이터 숫자 구하기
+                                              
+            # print(f'class {y}\'s distribution')
+            
             proportions = (np.cumsum(proportions) * len(idx_y)).astype(int)[:-1]
-            print(f'class {y}\'s distribution: {proportions}')
-
             idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_y, proportions))]
+            class_distribution = [len(idcs) for idcs in idx_batch]
+            # print(class_distribution)
+            # print(sum(class_distribution))
             min_size = min([len(idx_j) for idx_j in idx_batch])
 
-    # for i in range(n_clients):
-    #     # np.random.shuffle(idx_batch[i])
+    for i in range(n_clients):
+        np.random.shuffle(idx_batch[i])
         
     net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
     
-    print([len(idcs) for idcs in net_dataidx_map])
+    # print([len(idcs) for idcs in net_dataidx_map])
     
     return net_dataidx_map
 
@@ -170,17 +173,16 @@ def split_not_contain_every_class(train_idcs, train_labels, n_clients):
     return client_idcs
 
 
-def generate_server_idcs(test_idcs, test_labels, start_idx):
+def generate_server_idcs(test_idcs, test_labels, start_idx, target_class_data_count):
     
     n_class = 10
     server_idcs = []
-    data_per_class = 1000
 
     class_idcs = [np.where(test_labels == c)[0].tolist() for c in range(n_class)]
 
     for class_num, class_index in enumerate(class_idcs):
         start = 0
-        end = start + data_per_class
+        end = start + target_class_data_count
         server_idcs.extend(class_index[start:end])
 
     # Convert to numpy array
