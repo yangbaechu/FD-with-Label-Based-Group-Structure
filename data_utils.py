@@ -2,7 +2,7 @@ import numpy as np
 from torch.utils.data import Subset
 import math
 
-def split_noniid(train_idcs, train_labels, alpha, n_clients):
+def split_noniid_original(train_idcs, train_labels, alpha, n_clients):
     """
     Splits a list of data indices with corresponding labels
     into subsets according to a dirichlet distribution with parameter
@@ -45,6 +45,9 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients):
 
         # If a client has not received enough data, fill it with the remaining needed data from the available class indices
         if allocated_data_amount < client_data_amount:
+            print(f'client {i} didn\'t recieved enough data!')
+            print(f'target data: {client_data_amount}, allocated_data_amount: {allocated_data_amount}')
+            print(f'label_distribution: {np.round(fracs*100)}')
             for idcs in class_idcs:
                 remaining_data_amount = client_data_amount - allocated_data_amount
                 if remaining_data_amount <= len(idcs):
@@ -58,6 +61,44 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients):
 
     
     return client_idcs
+
+def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
+    
+    np.random.seed(seed)
+    
+    n_classes = 10
+    min_size = 0
+    min_require_size = 10
+
+    total_data_amount = len(train_idcs)
+    #net_dataidx_map = []
+
+    while min_size < min_require_size:
+        idx_batch = [[] for _ in range(n_clients)]
+        for y in range(n_classes):
+            idx_y = np.argwhere(train_labels[train_idcs] == y).flatten().tolist()
+            np.random.shuffle(idx_y)
+
+            proportions = np.random.dirichlet(np.repeat(alpha, n_clients)
+            # total data/client 수 초과된 client는 데이터 할당 X
+            proportions = np.array([p * (len(idx_j) < total_data_amount / n_clients) for p, idx_j in zip(proportions, idx_batch)])
+            # 합이 1이 되도록 정규화
+            proportions = proportions / proportions.sum()
+            #각 class가 받는 데이터 숫자 구하기
+            proportions = (np.cumsum(proportions) * len(idx_y)).astype(int)[:-1]
+            print(f'class {y}\'s distribution: {proportions}')
+
+            idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_y, proportions))]
+            min_size = min([len(idx_j) for idx_j in idx_batch])
+
+    # for i in range(n_clients):
+    #     # np.random.shuffle(idx_batch[i])
+        
+    net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
+    
+    print([len(idcs) for idcs in net_dataidx_map])
+    
+    return net_dataidx_map
 
 
 
