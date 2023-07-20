@@ -20,6 +20,7 @@ def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
     for ep in range(epochs):
         running_loss, samples = 0.0, 0
         for x, y in loader:
+            
             x, y = x.to(device), y.to(device)
 
             optimizer.zero_grad()
@@ -32,6 +33,7 @@ def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
                 raise ValueError("Loss is NaN or Infinity. Check your model and training parameters.")
                 
             running_loss += loss.detach().item() * y.shape[0]
+            # print(f'loss: {running_loss}')
             samples += y.shape[0]
 
             loss.backward()
@@ -208,7 +210,9 @@ def pairwise_angles(sources):
 
 class FederatedTrainingDevice(object):
     def __init__(self, model_fn, data):
-        self.model = model_fn().to(device)
+        self.model = model_fn()
+        self.model.fc = nn.Linear(self.model.fc.in_features, 10)
+        self.model = self.model.to(device)
         self.data = data
         self.W = {key: value for key, value in self.model.named_parameters()}
 
@@ -217,18 +221,20 @@ class FederatedTrainingDevice(object):
 
 
 class DistillationLoss(nn.Module):
-    def __init__(self, alpha=0.5, T=2.0):
+    def __init__(self, alpha=0.5, T=0.1):
         super(DistillationLoss, self).__init__()
         self.alpha = alpha
         self.T = T
 
     def forward(self, student_outputs, labels, teacher_outputs):
         hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
+        print(f'hard loss: {hard_loss}')
         soft_loss = self.alpha * F.kl_div(
             F.log_softmax(student_outputs / self.T, dim=1),
             F.softmax(teacher_outputs / self.T, dim=1),
             reduction="batchmean",
         )
+        print(f'soft loss: {soft_loss}')
         return hard_loss + soft_loss
 
 
@@ -248,13 +254,13 @@ class Client(FederatedTrainingDevice):
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
 
-        if distill_data:
-            self.distill_data = TensorDataset(*distill_data)  # assuming distill_data is a tuple (inputs, teacher_probs)
-            self.distill_loader = DataLoader(self.distill_data, batch_size=batch_size, shuffle=True)
+#         if distill_data:
+#             self.distill_data = TensorDataset(*distill_data)  # assuming distill_data is a tuple (inputs, teacher_probs)
+#             self.distill_loader = DataLoader(self.distill_data, batch_size=batch_size, shuffle=True)
             
-        else:
-            self.distill_data = None
-            self.distill_loader = None
+#         else:
+#             self.distill_data = None
+#             self.distill_loader = None
 
         self.id = idnum
 
@@ -268,8 +274,8 @@ class Client(FederatedTrainingDevice):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
 
-    def distill(self, distill_data, epochs=40):
-        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
+    def distill(self, distill_data, epochs=40, max_grad_norm=1.0):
+        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=200, shuffle=True)
         copy(target=self.W_old, source=self.W)
 
         # Distillation training
@@ -281,13 +287,19 @@ class Client(FederatedTrainingDevice):
 
                     self.optimizer.zero_grad()
 
-                    outputs = self.model(x)
+                    outputs = self.model(x)        
                     loss = self.loss_fn(outputs, y, teacher_y)
+                    now_loss = loss.detach().item() * y.shape[0]
 
-                    running_loss += loss.detach().item() * y.shape[0]
+                    running_loss += now_loss
+                    # if ep % 10 == 0:
+                    #     print(f'loss: {now_loss}')
                     samples += y.shape[0]
 
                     loss.backward()
+                    
+                    if max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
                     self.optimizer.step()
 
@@ -319,14 +331,13 @@ from collections import Counter
 class Server(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
-        self.model = model_fn().to(device)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
         
         # Compute the class distribution
         labels = [label for _, label in self.data]
         class_distribution = Counter(labels)
 
-        # Print the class distribution
+        # # Print the class distribution
         for class_label, count in class_distribution.items():
             print(f'Class {class_label}: {count} instances')
 
@@ -384,7 +395,7 @@ class Server(FederatedTrainingDevice):
         all_outputs = []
         all_inputs = []
         all_labels = []
-        class_count = {}  # keep count of examples per class
+        # class_count = {}  # keep count of examples per class
 
         with torch.no_grad():
             for data, labels in self.loader:
@@ -393,13 +404,13 @@ class Server(FederatedTrainingDevice):
 
                 for i in range(len(labels)):
                     label = labels[i]
-                    if label.item() not in class_count:
-                        class_count[label.item()] = 0
-                    if class_count[label.item()] < data_per_class:
-                        all_outputs.append(output[i].unsqueeze(0))  # appending 2D tensor of shape [1, 62]
-                        all_inputs.append(data[i].unsqueeze(0))  # appending 2D tensor
-                        all_labels.append(label.unsqueeze(0))  # appending 1D tensor
-                        class_count[label.item()] += 1
+                    # if label.item() not in class_count:
+                    #     class_count[label.item()] = 0
+                    # if class_count[label.item()] < data_per_class:
+                    all_outputs.append(output[i].unsqueeze(0))  # appending 2D tensor of shape [1, 62]
+                    all_inputs.append(data[i].unsqueeze(0))  # appending 2D tensor
+                    all_labels.append(label.unsqueeze(0))  # appending 1D tensor
+                    # class_count[label.item()] += 1
 
         # Then convert lists of tensors into single tensors
         all_outputs = torch.cat(all_outputs, dim=0)  # you can use torch.cat again since all tensors are 2D now
@@ -418,12 +429,12 @@ class Server(FederatedTrainingDevice):
 
     def make_averaged_logits(self, client_logits):
         for i, logit in enumerate(client_logits):
-            if len(logit.shape) == 1 or logit.shape[1] != 10:
-                print(f"Logit {i} has incorrect shape {logit.shape}")
+            if logit.shape != torch.Size([200, 10]):
+                print(f"client {i} has incorrect logit shape: {logit.shape}")
 
         # Continue with averaging...
         avg_logits = torch.mean(torch.stack(client_logits), dim=0)
-    
+        print(f'shape of averaged logits: {avg_logits.shape}')
         return avg_logits
 
 

@@ -12,7 +12,7 @@ def split_noniid_original(train_idcs, train_labels, alpha, n_clients):
     label_distribution = np.random.dirichlet([alpha] * n_classes, n_clients)
 
     class_idcs = [np.argwhere(train_labels[train_idcs] == y).flatten().tolist() for y in range(n_classes)] #MNiST
-    #class_idcs = [np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist() for y in range(n_classes)] CIFAR
+    class_idcs = [np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist() for y in range(n_classes)] #CIFAR
 
     total_data = [len(idcs) for idcs in class_idcs]
     client_idcs = [[] for _ in range(n_clients)]
@@ -68,7 +68,7 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
     
     n_classes = 10
     min_size = 0
-    min_require_size = 10
+    min_require_size = 5
 
     total_data_amount = len(train_idcs)
     #net_dataidx_map = []
@@ -76,7 +76,7 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
     while min_size < min_require_size:
         idx_batch = [[] for _ in range(n_clients)]
         for y in range(n_classes):
-            idx_y = np.argwhere(train_labels[train_idcs] == y).flatten().tolist()
+            idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist()
             # print(f'class {y}\'s amount in client: {len(idx_y)}')
             np.random.shuffle(idx_y)
 
@@ -99,7 +99,7 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
         
     net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
     
-    # print([len(idcs) for idcs in net_dataidx_map])
+    print([len(idcs) for idcs in net_dataidx_map])
     
     return net_dataidx_map
 
@@ -178,8 +178,8 @@ def generate_server_idcs(test_idcs, test_labels, start_idx, target_class_data_co
     n_class = 10
     server_idcs = []
 
-    class_idcs = [np.where(test_labels == c)[0].tolist() for c in range(n_class)]
-
+    class_idcs = [np.argwhere(np.array(test_labels)[np.array(test_idcs)] == y).flatten().tolist() for y in range(n_class)]
+    
     for class_num, class_index in enumerate(class_idcs):
         start = 0
         end = start + target_class_data_count
@@ -187,7 +187,7 @@ def generate_server_idcs(test_idcs, test_labels, start_idx, target_class_data_co
 
     # Convert to numpy array
     server_idcs = np.array(server_idcs)
-    server_idcs += start_idx
+    # server_idcs += start_idx
 
     return server_idcs
 
