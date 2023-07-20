@@ -17,32 +17,31 @@ def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
 
     criterion = torch.nn.CrossEntropyLoss()
     
-    for ep in range(epochs):
-        running_loss, samples = 0.0, 0
-        for x, y in loader:
+    running_loss, samples = 0.0, 0
+    for x, y in loader:
             
-            x, y = x.to(device), y.to(device)
+        x, y = x.to(device), y.to(device)
 
-            optimizer.zero_grad()
+        optimizer.zero_grad()
 
-            outputs = model(x)
-            loss = criterion(outputs, y)
-            
-            # Check if loss is valid
-            if torch.isnan(loss).any() or torch.isinf(loss).any():
-                raise ValueError("Loss is NaN or Infinity. Check your model and training parameters.")
-                
-            running_loss += loss.detach().item() * y.shape[0]
-            # print(f'loss: {running_loss}')
-            samples += y.shape[0]
+        outputs = model(x)
+        loss = criterion(outputs, y)
 
-            loss.backward()
+        # Check if loss is valid
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            raise ValueError("Loss is NaN or Infinity. Check your model and training parameters.")
 
-            # Optionally apply gradient clipping
-            if grad_clip:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        running_loss += loss.detach().item() * y.shape[0]
+        # print(f'loss: {running_loss}')
+        samples += y.shape[0]
 
-            optimizer.step()
+        loss.backward()
+
+        # Optionally apply gradient clipping
+        if grad_clip:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+        optimizer.step()
 
     # Switch back to evaluation mode
     model.eval()
@@ -228,40 +227,31 @@ class DistillationLoss(nn.Module):
 
     def forward(self, student_outputs, labels, teacher_outputs):
         hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
-        print(f'hard loss: {hard_loss}')
+        # print(f'hard loss: {hard_loss}')
         soft_loss = self.alpha * F.kl_div(
             F.log_softmax(student_outputs / self.T, dim=1),
             F.softmax(teacher_outputs / self.T, dim=1),
             reduction="batchmean",
         )
-        print(f'soft loss: {soft_loss}')
+        # print(f'soft loss: {soft_loss}')
         return hard_loss + soft_loss
 
 
 class Client(FederatedTrainingDevice):
-    def __init__(self, model_fn, optimizer_fn, data, idnum, distill_data=None, batch_size=128, train_frac=0.7):
+    def __init__(self, model_fn, optimizer_fn, data, idnum, batch_size=128, train_frac=0.7):
         super().__init__(model_fn, data)
         self.optimizer = optimizer_fn(self.model.parameters())
 
         self.data = data
+        
         n_train = int(len(data) * train_frac)
         n_eval = len(data) - n_train
-        
-        #print(f'data length: {len(data)}')
         
         data_train, data_eval = torch.utils.data.random_split(self.data, [n_train, n_eval])
         
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
-
-#         if distill_data:
-#             self.distill_data = TensorDataset(*distill_data)  # assuming distill_data is a tuple (inputs, teacher_probs)
-#             self.distill_loader = DataLoader(self.distill_data, batch_size=batch_size, shuffle=True)
-            
-#         else:
-#             self.distill_data = None
-#             self.distill_loader = None
-
+        
         self.id = idnum
 
         self.dW = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
@@ -332,14 +322,6 @@ class Server(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
-        
-        # Compute the class distribution
-        labels = [label for _, label in self.data]
-        class_distribution = Counter(labels)
-
-        # # Print the class distribution
-        for class_label, count in class_distribution.items():
-            print(f'Class {class_label}: {count} instances')
 
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
@@ -428,13 +410,7 @@ class Server(FederatedTrainingDevice):
         return distill_data  # return distill_data instead of individual arrays
 
     def make_averaged_logits(self, client_logits):
-        for i, logit in enumerate(client_logits):
-            if logit.shape != torch.Size([200, 10]):
-                print(f"client {i} has incorrect logit shape: {logit.shape}")
-
-        # Continue with averaging...
         avg_logits = torch.mean(torch.stack(client_logits), dim=0)
-        print(f'shape of averaged logits: {avg_logits.shape}')
         return avg_logits
 
 

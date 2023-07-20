@@ -2,65 +2,6 @@ import numpy as np
 from torch.utils.data import Subset
 import math
 
-def split_noniid_original(train_idcs, train_labels, alpha, n_clients):
-    """
-    Splits a list of data indices with corresponding labels
-    into subsets according to a dirichlet distribution with parameter
-    alpha
-    """
-    n_classes = 10
-    label_distribution = np.random.dirichlet([alpha] * n_classes, n_clients)
-
-    class_idcs = [np.argwhere(train_labels[train_idcs] == y).flatten().tolist() for y in range(n_classes)] #MNiST
-    class_idcs = [np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist() for y in range(n_classes)] #CIFAR
-
-    total_data = [len(idcs) for idcs in class_idcs]
-    client_idcs = [[] for _ in range(n_clients)]
-
-   # Determine common amount of data each client should have
-    total_data_amount = sum([len(idcs) for idcs in class_idcs])
-    client_data_amount = (total_data_amount//10) // len(client_idcs)
-
-    for i, (client, fracs) in enumerate(zip(client_idcs, label_distribution)):
-
-        # Keep track of how much data has been allocated to this client
-        allocated_data_amount = 0
-
-        for j, (idcs, frac) in enumerate(zip(class_idcs, fracs)):
-            idcs_len = int(total_data[j]*frac*0.1)
-
-            # Adjust the data length if it exceeds the remaining data that this client can receive
-            remaining_data_amount = client_data_amount - allocated_data_amount
-            if idcs_len > remaining_data_amount:
-                idcs_len = remaining_data_amount
-
-            # if idcs_len == 0:
-            #     print("no data allocated")
-            # if idcs_len > len(idcs):
-            #     print(f'allocated data: {idcs_len}, left data: {len(idcs)}')
-
-            client.extend(idcs[:idcs_len])
-            allocated_data_amount += idcs_len
-            del idcs[:idcs_len]
-
-        # If a client has not received enough data, fill it with the remaining needed data from the available class indices
-        if allocated_data_amount < client_data_amount:
-            print(f'client {i} didn\'t recieved enough data!')
-            print(f'target data: {client_data_amount}, allocated_data_amount: {allocated_data_amount}')
-            print(f'label_distribution: {np.round(fracs*100)}')
-            for idcs in class_idcs:
-                remaining_data_amount = client_data_amount - allocated_data_amount
-                if remaining_data_amount <= len(idcs):
-                    client.extend(idcs[:remaining_data_amount])
-                    del idcs[:remaining_data_amount]
-                    break
-
-    # print([len(c_id) for c_id in client_idcs])
-    
-    client_idcs = [train_idcs[np.array(idcs)] for idcs in client_idcs] 
-
-    
-    return client_idcs
 
 def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
     
@@ -68,7 +9,7 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
     
     n_classes = 10
     min_size = 0
-    min_require_size = 5
+    min_require_size = 1
 
     total_data_amount = len(train_idcs)
     #net_dataidx_map = []
@@ -90,16 +31,15 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
             proportions = (np.cumsum(proportions) * len(idx_y)).astype(int)[:-1]
             idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_y, proportions))]
             class_distribution = [len(idcs) for idcs in idx_batch]
+            
             # print(class_distribution)
-            # print(sum(class_distribution))
+
             min_size = min([len(idx_j) for idx_j in idx_batch])
 
-    for i in range(n_clients):
-        np.random.shuffle(idx_batch[i])
+    # for i in range(n_clients):
+    #     np.random.shuffle(idx_batch[i])
         
     net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
-    
-    print([len(idcs) for idcs in net_dataidx_map])
     
     return net_dataidx_map
 
@@ -173,23 +113,22 @@ def split_not_contain_every_class(train_idcs, train_labels, n_clients):
     return client_idcs
 
 
-def generate_server_idcs(test_idcs, test_labels, start_idx, target_class_data_count):
+def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     
     n_class = 10
     server_idcs = []
 
-    class_idcs = [np.argwhere(np.array(test_labels)[np.array(test_idcs)] == y).flatten().tolist() for y in range(n_class)]
+    class_idcs = [np.argwhere(np.array(test_labels)[test_idcs] == y).flatten().tolist() for y in range(n_class)]
+    
     
     for class_num, class_index in enumerate(class_idcs):
-        start = 0
-        end = start + target_class_data_count
-        server_idcs.extend(class_index[start:end])
+        server_idcs.extend(test_idcs[class_index[:target_class_data_count]])
 
     # Convert to numpy array
     server_idcs = np.array(server_idcs)
-    # server_idcs += start_idx
 
     return server_idcs
+
 
 
 
