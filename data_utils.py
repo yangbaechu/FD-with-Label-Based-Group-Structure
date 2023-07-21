@@ -117,17 +117,26 @@ def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     
     n_class = 10
     server_idcs = []
+    remaining_indices = []
 
     class_idcs = [np.argwhere(np.array(test_labels)[test_idcs] == y).flatten().tolist() for y in range(n_class)]
     
-    
     for class_num, class_index in enumerate(class_idcs):
-        server_idcs.extend(test_idcs[class_index[:target_class_data_count]])
+        if len(class_index) >= target_class_data_count:
+            server_idcs.extend(test_idcs[class_index[:target_class_data_count]])
+        else:
+            server_idcs.extend(test_idcs[class_index])
+            remaining_indices.extend(test_idcs[class_index[target_class_data_count:]])
+
+    # If not all classes had enough samples, fill up server_idcs with remaining indices
+    while len(server_idcs) < target_class_data_count * n_class and remaining_indices:
+        server_idcs.append(remaining_indices.pop())
 
     # Convert to numpy array
     server_idcs = np.array(server_idcs)
 
     return server_idcs
+
 
 
 

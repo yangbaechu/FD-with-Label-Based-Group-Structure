@@ -77,19 +77,19 @@ def refine_as_not_true(logits, targets, num_classes):
     return logits
 
 class DistillationLoss(nn.Module):
-    def __init__(self, alpha=0.5, T=2.0):
+    def __init__(self, alpha=0.5, T=0.1):
         super(DistillationLoss, self).__init__()
         self.alpha = alpha
         self.T = T
 
     def forward(self, student_outputs, labels, teacher_outputs):
-        hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
+        # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
         soft_loss = self.alpha * F.kl_div(
             F.log_softmax(student_outputs / self.T, dim=1),
             F.softmax(teacher_outputs / self.T, dim=1),
             reduction="batchmean",
         )
-        return hard_loss + soft_loss
+        return soft_loss
     
 class NTD_Loss(nn.Module):
     """Not-true Distillation Loss"""
@@ -226,7 +226,7 @@ class DistillationLoss(nn.Module):
         self.T = T
 
     def forward(self, student_outputs, labels, teacher_outputs):
-        hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
+        # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
         # print(f'hard loss: {hard_loss}')
         soft_loss = self.alpha * F.kl_div(
             F.log_softmax(student_outputs / self.T, dim=1),
@@ -234,11 +234,11 @@ class DistillationLoss(nn.Module):
             reduction="batchmean",
         )
         # print(f'soft loss: {soft_loss}')
-        return hard_loss + soft_loss
+        return soft_loss
 
 
 class Client(FederatedTrainingDevice):
-    def __init__(self, model_fn, optimizer_fn, data, idnum, batch_size=128, train_frac=0.7):
+    def __init__(self, model_fn, optimizer_fn, data, idnum, batch_size=512, train_frac=0.7):
         super().__init__(model_fn, data)
         self.optimizer = optimizer_fn(self.model.parameters())
 
@@ -265,7 +265,7 @@ class Client(FederatedTrainingDevice):
         self.W_original = self.W
 
     def distill(self, distill_data, epochs=40, max_grad_norm=1.0):
-        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=200, shuffle=True)
+        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=512, shuffle=True)
         copy(target=self.W_old, source=self.W)
 
         # Distillation training
@@ -321,7 +321,7 @@ from collections import Counter
 class Server(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
-        self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
+        self.loader = DataLoader(self.data, batch_size=512, shuffle=False, pin_memory=True)
 
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
