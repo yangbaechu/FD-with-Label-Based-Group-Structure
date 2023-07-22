@@ -76,56 +76,6 @@ def refine_as_not_true(logits, targets, num_classes):
 
     return logits
 
-class DistillationLoss(nn.Module):
-    def __init__(self, alpha=0.5, T=0.1):
-        super(DistillationLoss, self).__init__()
-        self.alpha = alpha
-        self.T = T
-
-    def forward(self, student_outputs, labels, teacher_outputs):
-        # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
-        soft_loss = self.alpha * F.kl_div(
-            F.log_softmax(student_outputs / self.T, dim=1),
-            F.softmax(teacher_outputs / self.T, dim=1),
-            reduction="batchmean",
-        )
-        return soft_loss
-    
-class NTD_Loss(nn.Module):
-    """Not-true Distillation Loss"""
-
-    def __init__(self, num_classes=10, tau=3, beta=1):
-        super(NTD_Loss, self).__init__()
-        self.CE = nn.CrossEntropyLoss()
-        self.MSE = nn.MSELoss()
-        self.KLDiv = nn.KLDivLoss(reduction="batchmean")
-        self.num_classes = num_classes
-        self.tau = tau
-        self.beta = beta
-
-    def forward(self, logits, targets, dg_logits):
-        ce_loss = self.CE(logits, targets)
-        ntd_loss = self._ntd_loss(logits, dg_logits, targets)
-
-        loss = ce_loss + self.beta * ntd_loss
-
-        return loss
-
-    def _ntd_loss(self, logits, dg_logits, targets):
-        """Not-tue Distillation Loss"""
-
-        # Get smoothed local model prediction
-        logits = refine_as_not_true(logits, targets, self.num_classes)
-        pred_probs = F.log_softmax(logits / self.tau, dim=1)
-
-        # Get smoothed global model prediction
-        with torch.no_grad():
-            dg_logits = refine_as_not_true(dg_logits, targets, self.num_classes)
-            dg_probs = torch.softmax(dg_logits / self.tau, dim=1)
-
-        loss = (self.tau ** 2) * self.KLDiv(pred_probs, dg_probs)
-
-        return loss
 
 def eval_for_server(model, loader):
     model.eval()
@@ -206,10 +156,60 @@ def pairwise_angles(sources):
 
     return angles.numpy()
 
+class NTD_Loss(nn.Module):
+    """Not-true Distillation Loss"""
 
+    def __init__(self, num_classes=10, tau=3, beta=1):
+        super(NTD_Loss, self).__init__()
+        self.CE = nn.CrossEntropyLoss()
+        self.MSE = nn.MSELoss()
+        self.KLDiv = nn.KLDivLoss(reduction="batchmean")
+        self.num_classes = num_classes
+        self.tau = tau
+        self.beta = beta
+
+    def forward(self, logits, targets, dg_logits):
+        ce_loss = self.CE(logits, targets)
+        ntd_loss = self._ntd_loss(logits, dg_logits, targets)
+
+        loss = ce_loss + self.beta * ntd_loss
+
+        return loss
+
+    def _ntd_loss(self, logits, dg_logits, targets):
+        """Not-tue Distillation Loss"""
+
+        # Get smoothed local model prediction
+        logits = refine_as_not_true(logits, targets, self.num_classes)
+        pred_probs = F.log_softmax(logits / self.tau, dim=1)
+
+        # Get smoothed global model prediction
+        with torch.no_grad():
+            dg_logits = refine_as_not_true(dg_logits, targets, self.num_classes)
+            dg_probs = torch.softmax(dg_logits / self.tau, dim=1)
+
+        loss = (self.tau ** 2) * self.KLDiv(pred_probs, dg_probs)
+
+        return loss
+
+class DistillationLoss(nn.Module):
+    def __init__(self, alpha=0.5, T=0.1):
+        super(DistillationLoss, self).__init__()
+        self.alpha = alpha
+        self.T = T
+
+    def forward(self, student_outputs, labels, teacher_outputs):
+        # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
+        soft_loss = self.alpha * F.kl_div(
+            F.log_softmax(student_outputs / self.T, dim=1),
+            F.softmax(teacher_outputs / self.T, dim=1),
+            reduction="batchmean",
+        )
+        return soft_losss
+    
 class FederatedTrainingDevice(object):
     def __init__(self, model_fn, data):
-        self.model = model_fn()
+        self.model = model_fn(weights="IMAGENET1K_V1")
         self.model.fc = nn.Linear(self.model.fc.in_features, 10)
         self.model = self.model.to(device)
         self.data = data
@@ -298,9 +298,7 @@ class Client(FederatedTrainingDevice):
         
     def compute_weight_update(self, epochs=1, loader=None):
         copy(target=self.W_old, source=self.W)
-        
-        # Regular training
-        self.optimizer.param_groups[0]["lr"] *= 0.99
+
         train_stats = train_op(
             self.model,
             self.train_loader if not loader else loader,
@@ -386,13 +384,9 @@ class Server(FederatedTrainingDevice):
 
                 for i in range(len(labels)):
                     label = labels[i]
-                    # if label.item() not in class_count:
-                    #     class_count[label.item()] = 0
-                    # if class_count[label.item()] < data_per_class:
                     all_outputs.append(output[i].unsqueeze(0))  # appending 2D tensor of shape [1, 62]
                     all_inputs.append(data[i].unsqueeze(0))  # appending 2D tensor
                     all_labels.append(label.unsqueeze(0))  # appending 1D tensor
-                    # class_count[label.item()] += 1
 
         # Then convert lists of tensors into single tensors
         all_outputs = torch.cat(all_outputs, dim=0)  # you can use torch.cat again since all tensors are 2D now
@@ -409,12 +403,12 @@ class Server(FederatedTrainingDevice):
         distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
         return distill_data  # return distill_data instead of individual arrays
 
-    def make_averaged_logits(self, client_logits):
+    def get_global_logits(self, client_logits):
         avg_logits = torch.mean(torch.stack(client_logits), dim=0)
         return avg_logits
 
-
     
+    # predicted, soft_sum: Unlabel data도 가능
     def evaluate(self, model):
         (
             label_accuracies,
