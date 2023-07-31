@@ -15,6 +15,7 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
     #net_dataidx_map = []
 
     while min_size < min_require_size:
+        print('not enough data!')
         idx_batch = [[] for _ in range(n_clients)]
         for y in range(n_classes):
             idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist()
@@ -45,75 +46,114 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
 
 
 
-def split_contain_every_class(train_idcs, train_labels, n_clients, data_per_class, Imbalance_ratio):
-    """
-    Splits a list of data indices with corresponding labels
-    into subsets according to deterministic rule
-    """
+# def split_contain_every_class(train_idcs, train_labels, n_clients, data_per_class, Imbalance_ratio):
+#     """
+#     Splits a list of data indices with corresponding labels
+#     into subsets according to deterministic rule
+#     """
 
-    data_per_class = data_per_class
-    n_cluster = 3
-    client_per_cluster = 3
-    n_class = 20
-    Imbalance_ratio = Imbalance_ratio
-    client_idcs = [[] for _ in range(n_clients)]
+#     data_per_class = data_per_class
+#     n_cluster = 3
+#     client_per_cluster = 3
+#     n_class = 20
+#     Imbalance_ratio = Imbalance_ratio
+#     client_idcs = [[] for _ in range(n_clients)]
 
-    class_idcs = [
-        np.where(train_labels == c)[0].tolist()[:4000] for c in range(n_class)
-    ]
+#     class_idcs = [
+#         np.where(train_labels == c)[0].tolist()[:4000] for c in range(n_class)
+#     ]
 
-    for c in range(n_cluster):
-        for client in range(client_per_cluster):
-            # split indices for class c across clients for that class
-            idx = []
-            for class_num, class_index in enumerate(class_idcs):
-                start = (n_cluster * 3 + n_clients) * data_per_class
-                end = start + data_per_class
-                # Allocate 2 times more data of class 0, 1, 2 to cluster 1 and so on
-                if class_num // 3 == c:
-                    end += int(data_per_class * (Imbalance_ratio - 1))
-                idx.extend(class_index[start:end])
+#     for c in range(n_cluster):
+#         for client in range(client_per_cluster):
+#             # split indices for class c across clients for that class
+#             idx = []
+#             for class_num, class_index in enumerate(class_idcs):
+#                 start = (n_cluster * 3 + n_clients) * data_per_class
+#                 end = start + data_per_class
+#                 # Allocate 2 times more data of class 0, 1, 2 to cluster 1 and so on
+#                 if class_num // 3 == c:
+#                     end += int(data_per_class * (Imbalance_ratio - 1))
+#                 idx.extend(class_index[start:end])
 
-            client_idcs[client + c * client_per_cluster] += idx
+#             client_idcs[client + c * client_per_cluster] += idx
 
-    # Convert to numpy array
-    client_idcs = [np.array(idcs) for idcs in client_idcs]
+#     # Convert to numpy array
+#     client_idcs = [np.array(idcs) for idcs in client_idcs]
 
-    return client_idcs
+#     return client_idcs
 
 
-def split_not_contain_every_class(train_idcs, train_labels, n_clients):
-    """
-    Splits a list of data indices with corresponding labels
-    into subsets according to deterministic rule
-    """
+def split_2class_plus_alpha(train_idcs, train_labels, n_clients, seed=123):
+    np.random.seed(seed)
 
-    n_classes = 3  # we have three classes 0, 1 and 2
-    client_idcs = [[] for _ in range(n_clients)]
-    clients_per_class = (
-        n_clients // n_classes
-    )  # assume n_clients is a multiple of n_classes
+    n_classes = 10
+    clients_per_class = n_clients // (n_classes // 2)
+    idx_batch = [[] for _ in range(n_clients)]
+    remaining_data = []
 
-    for c in range(n_classes):
-        # find indices of class c
-        class_idcs_1 = np.where(train_labels == c)[0].tolist()[:4000]
-        class_idcs_2 = np.where(train_labels == c + 3)[0].tolist()[:4000]
+    for y in range(n_classes):
+        idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist()
+        np.random.shuffle(idx_y)
+        
+        split_idx = int(0.8 * len(idx_y))
+        idx_y_split = np.array_split(idx_y[:split_idx], clients_per_class)
+        remaining_data.extend(idx_y[split_idx:])
+        
+        for i, client_id in enumerate(range((y // 2) * clients_per_class, (y // 2 + 1) * clients_per_class)):
+            idx_batch[client_id] += idx_y_split[i].tolist()
 
-        # split indices for class c across clients for that class
+    np.random.shuffle(remaining_data)
+    remaining_data_split = np.array_split(remaining_data, n_clients)
+
+    for i in range(n_clients):
+        idx_batch[i] += remaining_data_split[i].tolist()
+
+    net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
+
+    # print class distribution for each client
+    # print("Class distribution per client:")
+    # for i, idcs in enumerate(idx_batch):
+    #     class_counts = {label:0 for label in range(n_classes)}
+    #     for idx in idcs:
+    #         class_counts[train_labels[train_idcs[idx]]] += 1
+    #     print(f"Client {i}: {class_counts}")
+
+    return net_dataidx_map
+
+
+def split_contain_2class(train_idcs, train_labels, n_clients, seed=123):
+    
+    np.random.seed(seed)
+    
+    n_classes = 10
+
+    clients_per_class = n_clients // (n_classes // 2)
+    idx_batch = [[] for _ in range(n_clients)]
+    for y in range(n_classes):
+        idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist()
+        np.random.shuffle(idx_y)
+        
+        # Split indices of the same class into multiple chunks
+        idx_y_split = np.array_split(idx_y, clients_per_class)
+
+        # Assign each chunk to a different client
         for i in range(clients_per_class):
-            start = i * 200
-            end = start + 200
+            client_id = (y // 2) * clients_per_class + i
+            idx_batch[client_id] += idx_y_split[i].tolist()
 
-            client_idcs[i * n_classes + c] += list(class_idcs_1[start:end])
-            client_idcs[i * n_classes + c] += list(class_idcs_2[start:end])
+    net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
+    
+    print("Class distribution per client:")
+    for i, idcs in enumerate(idx_batch):
+        class_counts = {label:0 for label in range(n_classes)}
+        for idx in idcs:
+            class_counts[train_labels[train_idcs[idx]]] += 1
+        print(f"Client {i}: {class_counts}")
+    
+    return net_dataidx_map
 
-    # Convert to numpy array
-    client_idcs = [np.array(idcs) for idcs in client_idcs]
 
-    return client_idcs
-
-
-def split_contain_3class(train_idcs, train_labels, n_clients, client_distribution=[0.5, 0.3, 0.2], seed=123):
+def split_contain_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution=[0.5, 0.3, 0.2], seed=123):
     
     np.random.seed(seed)
     
@@ -122,7 +162,7 @@ def split_contain_3class(train_idcs, train_labels, n_clients, client_distributio
     data_per_class = 50
 
     # Number of clients per group based on the given distribution
-    clients_per_group = [int(dist * n_clients) for dist in client_distribution]
+    clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
     idx_batch = [[] for _ in range(n_clients)]
     
     for group in range(n_classes // classes_per_group):
@@ -146,26 +186,80 @@ def split_contain_3class(train_idcs, train_labels, n_clients, client_distributio
     return net_dataidx_map
 
 
+
+# def split_not_contain_every_class(train_idcs, train_labels, n_clients):
+#     """
+#     Splits a list of data indices with corresponding labels
+#     into subsets according to deterministic rule
+#     """
+
+#     n_classes = 10  
+#     client_idcs = [[] for _ in range(n_clients)]
+#     client_per_group = n_clients // (n_classes//2)  # clients per group
+
+#     # find indices of each class
+#     class_idcs = [np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist() for y in range(n_classes)]
+
+#     # loop over groups of clients
+#     for group in range(n_classes // 2):
+#         # find two classes for this group of clients
+#         c1 = group * 2
+#         c2 = c1 + 1
+
+#         # split indices for these two classes across this group of clients
+#         for i in range(group * client_per_group, (group+1) * client_per_group):
+#             idcs_per_client_1 = len(class_idcs[c1]) // client_per_group
+#             idcs_per_client_2 = len(class_idcs[c2]) // client_per_group
+
+#             # calculate start and end for each class
+#             client_idx = i - group * client_per_group
+#             start_1 = client_idx * idcs_per_client_1
+#             end_1 = start_1 + idcs_per_client_1
+#             start_2 = client_idx * idcs_per_client_2
+#             end_2 = start_2 + idcs_per_client_2
+
+#             # assign indices
+#             client_idcs[i] += class_idcs[c1][start_1:end_1]
+#             client_idcs[i] += class_idcs[c2][start_2:end_2]
+
+#     # Convert to numpy array
+#     client_idcs = [np.array(idcs) for idcs in client_idcs]
+    
+#     # Print class distribution for some clients
+#     for i in range(min(5, n_clients)):  # adjust the number of clients to display
+#         client_class_idcs = [np.argwhere(np.array(train_labels)[client_idcs[i]] == y).flatten().tolist() for y in range(n_classes)]
+#         print(f"Client {i} class distribution: {list(map(len, client_class_idcs))}")
+
+
+#     return client_idcs
+
+
+
 def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     
     n_class = 10
     server_idcs = []
+    remaining_indices = []
 
-    test_idcs = np.array(test_idcs, dtype=int) # Ensure that test_idcs is an array of integers
     class_idcs = [np.argwhere(np.array(test_labels)[test_idcs] == y).flatten().tolist() for y in range(n_class)]
-
     
     for class_num, class_index in enumerate(class_idcs):
-        if len(class_index) < target_class_data_count:
-            print(f"Class {class_num} does not have enough samples, skipping...")
-            continue
+        if len(class_index) >= target_class_data_count:
+            server_idcs.extend(test_idcs[class_index[:target_class_data_count]])
+        else:
+            server_idcs.extend(test_idcs[class_index])
+            remaining_indices.extend(test_idcs[class_index[target_class_data_count:]])
 
-        server_idcs.extend(class_index[:target_class_data_count])
+    # If not all classes had enough samples, fill up server_idcs with remaining indices
+    while len(server_idcs) < target_class_data_count * n_class and remaining_indices:
+        server_idcs.append(remaining_indices.pop())
 
     # Convert to numpy array
     server_idcs = np.array(server_idcs)
 
     return server_idcs
+
+
 
 
 

@@ -22,28 +22,30 @@ def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
     for x, y in loader:
             
         x, y = x.to(device), y.to(device)
-
         optimizer.zero_grad()
+        
+        if x.size(0) > 1:
+            outputs = model(x)
+            loss = criterion(outputs, y)
 
-        outputs = model(x)
-        loss = criterion(outputs, y)
+            # Check if loss is valid
+            if torch.isnan(loss).any() or torch.isinf(loss).any():
+                raise ValueError("Loss is NaN or Infinity. Check your model and training parameters.")
 
-        # Check if loss is valid
-        if torch.isnan(loss).any() or torch.isinf(loss).any():
-            raise ValueError("Loss is NaN or Infinity. Check your model and training parameters.")
+            running_loss += loss.detach().item() * y.shape[0]
+            # print(f'loss: {running_loss}')
+            samples += y.shape[0]
 
-        running_loss += loss.detach().item() * y.shape[0]
-        # print(f'loss: {running_loss}')
-        samples += y.shape[0]
+            loss.backward()
 
-        loss.backward()
+            # Optionally apply gradient clipping
+            if grad_clip:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-        # Optionally apply gradient clipping
-        if grad_clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-
-        optimizer.step()
-
+            optimizer.step()
+        else:
+            print("Batch size is 1, skipping this batch")
+            
     # Switch back to evaluation mode
     model.eval()
     # print(f"running_loss: {running_loss}")
@@ -58,13 +60,14 @@ def eval_op(model, loader):
     with torch.no_grad():
         for i, (x, y) in enumerate(loader):
             x, y = x.to(device), y.to(device)
+            if x.size(0) > 1:
+                y_ = model(x)
+                _, predicted = torch.max(y_.data, 1)
 
-            y_ = model(x)
-            _, predicted = torch.max(y_.data, 1)
-
-            samples += y.shape[0]
-            correct += (predicted == y).sum().item()
-
+                samples += y.shape[0]
+                correct += (predicted == y).sum().item()
+            else:
+                print('pass this sample for evluation')
     return correct / samples
 
 def refine_as_not_true(logits, targets, num_classes):
@@ -148,26 +151,14 @@ class NTD_Loss(nn.Module):
         loss = (self.tau ** 2) * self.KLDiv(pred_probs, dg_probs)
 
         return loss
-
-class DistillationLoss(nn.Module):
-    def __init__(self, alpha=0.5, T=0.1):
-        super(DistillationLoss, self).__init__()
-        self.alpha = alpha
-        self.T = T
-
-    def forward(self, student_outputs, labels, teacher_outputs):
-        # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
-        soft_loss = self.alpha * F.kl_div(
-            F.log_softmax(student_outputs / self.T, dim=1),
-            F.softmax(teacher_outputs / self.T, dim=1),
-            reduction="batchmean",
-        )
-        return soft_losss
     
 class FederatedTrainingDevice(object):
     def __init__(self, model_fn, data):
-        self.model = model_fn(weights="IMAGENET1K_V1")
-        self.model.fc = nn.Linear(self.model.fc.in_features, 10)
+        self.model = model_fn(weights="IMAGENET1K_V2")
+        self.model.classifier[3] = torch.nn.Linear(in_features=self.model.classifier[3].in_features, out_features=10)
+        # self.model.num_classes = 10
+        # self.model.fc = nn.Linear(self.model.fc.in_features, 10) # Resnet 
+        # self.model.classifier[1] = torch.nn.Linear(self.model.classifier[3].in_features, 10) #MobileNet
         self.model = self.model.to(device)
         self.data = data
         self.W = {key: value for key, value in self.model.named_parameters()}
@@ -182,7 +173,7 @@ class DistillationLoss(nn.Module):
         self.alpha = alpha
         self.T = T
 
-    def forward(self, student_outputs, labels, teacher_outputs):
+    def forward(self, student_outputs, teacher_outputs, labels=None):
         # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
         # print(f'hard loss: {hard_loss}')
         soft_loss = self.alpha * F.kl_div(
@@ -193,10 +184,40 @@ class DistillationLoss(nn.Module):
         # print(f'soft loss: {soft_loss}')
         return soft_loss
 
+class ClusterDistillationLoss(nn.Module):
+    def __init__(self, alpha=0.5, T=0.1):
+        super(ClusterDistillationLoss, self).__init__()
+        self.alpha = alpha
+        self.T = T
+
+    def forward(self, student_outputs, cluster_logits, global_logits, weight_for_class=None, labels=None):
+        # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
+        # print(f'hard loss: {hard_loss}')
+        if weight_for_class:
+            cluster_loss = weight_for_class * self.alpha * F.kl_div(
+                F.log_softmax(student_outputs / self.T, dim=1),
+                F.softmax(cluster_logits / self.T, dim=1),
+                reduction="batchmean",
+            )
+        else:
+            cluster_loss = self.alpha * F.kl_div(
+                F.log_softmax(student_outputs / self.T, dim=1),
+                F.softmax(cluster_logits / self.T, dim=1),
+                reduction="batchmean",
+            )
+
+        global_loss = self.alpha * F.kl_div(
+            F.log_softmax(student_outputs / self.T, dim=1),
+            F.softmax(global_logits / self.T, dim=1),
+            reduction="batchmean",
+        )
+        # print(f'soft loss: {soft_loss}')
+        return cluster_loss + global_loss
 
 class Client(FederatedTrainingDevice):
-    def __init__(self, model_fn, optimizer_fn, data, idnum, batch_size=512, train_frac=0.7):
+    def __init__(self, model_fn, optimizer_fn, data, idnum, batch_size=128, train_frac=0.7):
         super().__init__(model_fn, data)
+        
         self.optimizer = optimizer_fn(self.model.parameters())
 
         self.data = data
@@ -214,38 +235,76 @@ class Client(FederatedTrainingDevice):
         self.dW = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
         self.W_old = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
 
-        self.loss_fn = DistillationLoss()
-
+        self.loss_fn = ClusterDistillationLoss()
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
 
-    def distill(self, distill_data, epochs=40, max_grad_norm=None):
+    def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
         copy(target=self.W_old, source=self.W)
+        
+        for g in self.optimizer.param_groups:
+            g['lr'] = 0.0002
 
         # Distillation training
         if self.distill_loader is not None:
             for ep in range(epochs):
-                # print(f'distill epoch {ep + 1}')
                 running_loss, samples = 0.0, 0
-                for x, y, teacher_y in self.distill_loader:
-                    x, y, teacher_y = x.to(device), y.to(device), teacher_y.to(device)
+                for x, cluster_logit, global_logit in self.distill_loader:
+                    x, cluster_logit, global_logit = x.to(device), cluster_logit.to(device), global_logit.to(device)
 
                     self.optimizer.zero_grad()
 
                     outputs = self.model(x)
-                    loss = self.loss_fn(outputs, y, teacher_y)
-                    now_loss = loss.detach().item() * y.shape[0]
+                    loss = self.loss_fn(outputs, cluster_logit, global_logit)
+                    now_loss = loss.detach().item() * x.shape[0]
 
                     running_loss += now_loss
-                    # print(f'loss: {now_loss}')
-                    samples += y.shape[0]
+                    # if ep % 10 == 0:
+                    #     print(f'loss: {now_loss}')
+                    samples += x.shape[0]
 
                     loss.backward()
+                    
+                    if max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
-                    # Clip the gradients
+                    self.optimizer.step()
+
+        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+        return
+    
+    def distill(self, distill_data, epochs=20, max_grad_norm=1.0):
+        self.loss_fn = DistillationLoss()
+        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
+        copy(target=self.W_old, source=self.W)
+        
+        for g in self.optimizer.param_groups:
+            g['lr'] = 0.0005
+
+        # Distillation training
+        if self.distill_loader is not None:
+            for ep in range(1, epochs + 1):
+                running_loss, samples = 0.0, 0
+                for x, teacher_y in self.distill_loader:
+                    x, teacher_y = x.to(device), teacher_y.to(device)
+
+                    self.optimizer.zero_grad()
+
+                    outputs = self.model(x)
+                    loss = self.loss_fn(outputs, teacher_y)
+                    now_loss = loss.detach().item() * x.shape[0]
+
+                    running_loss += now_loss
+                    if ep % 5 == 0 and self.id % 50 == 0:
+                        print(f'distill epoch {ep}, loss: {now_loss}')
+                        
+                    samples += x.shape[0]
+                    
+                    loss.backward()
+                    
                     if max_grad_norm is not None:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
@@ -254,13 +313,55 @@ class Client(FederatedTrainingDevice):
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
 
+#     def distill(self, distill_data, epochs=40, max_grad_norm=1.0):
+#         self.loss_fn = DistillationLoss()
+#         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=512, shuffle=True)
+#         copy(target=self.W_old, source=self.W)
         
+# #         # Freeze all the parameters
+# #         for param in self.model.parameters():
+# #             param.requires_grad = False
+
+# #         # Unfreeze the parameters of the fc layer
+# #         for param in self.model.fc.parameters():
+# #             param.requires_grad = True
+            
+#             # Update the optimizer to only update the parameters of the fc layer
+#         self.optimizer = torch.optim.Adam(self.model.fc.parameters(), lr=0.0001)
+
+#         # Distillation training
+#         if self.distill_loader is not None:
+#             for ep in range(epochs):
+#                 running_loss, samples = 0.0, 0
+#                 for x, teacher_y in self.distill_loader:
+#                     x, teacher_y = x.to(device), teacher_y.to(device)
+
+#                     self.optimizer.zero_grad()
+
+#                     outputs = self.model(x)
+#                     loss = self.loss_fn(outputs, teacher_y)
+#                     now_loss = loss.detach().item() * x.shape[0]
+
+#                     running_loss += now_loss
+#                     samples += x.shape[0]
+
+#                     loss.backward()
+
+#                     if max_grad_norm is not None:
+#                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+
+#                     self.optimizer.step()
+
+#         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+#         return
+
+
     def compute_weight_update(self, epochs=1, loader=None):
         copy(target=self.W_old, source=self.W)
 
         train_stats = train_op(
             self.model,
-            self.train_loader if not loader else loader,
+            self.train_loader, #if not loader else loader,
             self.optimizer,
             epochs,
         )
@@ -278,56 +379,10 @@ from collections import Counter
 class Server(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
-        self.loader = DataLoader(self.data, batch_size=512, shuffle=False, pin_memory=True)
+        self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
 
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
-
-
-   # method to generate distillation data
-    def make_distillation_data(self, data_per_class):
-        self.model.train()  # set the model to training mode
-        criterion = torch.nn.CrossEntropyLoss()  # define the loss function
-
-        for epoch in range(50):  
-            for inputs, labels in self.loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                self.optimizer.zero_grad()  # clear the gradients
-                outputs = self.model(inputs)  # forward pass
-                loss = criterion(outputs, labels)  # compute loss
-                loss.backward()  # backward pass
-                self.optimizer.step()  # update the weights
-
-        # use teacher model to make predictions
-        self.model.eval()  # set teacher model to eval mode
-        all_outputs = []
-        all_inputs = []
-        all_labels = []
-        class_count = {}  # keep count of examples per class
-
-        with torch.no_grad():
-            for data, labels in self.loader:
-                data, labels = data.to(device), labels.to(device)
-                output = self.model(data)
-
-                for i in range(len(labels)):
-                    label = labels[i]
-                    if label.item() not in class_count:
-                        class_count[label.item()] = 0
-                    if class_count[label.item()] < data_per_class:
-                        all_outputs.append(output[i])
-                        all_inputs.append(data[i])
-                        all_labels.append(label)
-                        class_count[label.item()] += 1
-
-        all_outputs = torch.stack(all_outputs, dim=0)
-        all_inputs = torch.stack(all_inputs, dim=0)
-        all_labels = torch.stack(all_labels, dim=0)
-        # apply softmax to convert to probabilities
-        teacher_probs = torch.softmax(all_outputs, dim=1)
-
-        distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
-        return distill_data  # return distill_data instead of individual arrays
 
     def get_clients_logit(self, model, data_per_class):
         model.eval()  # set teacher model to eval mode
@@ -362,15 +417,8 @@ class Server(FederatedTrainingDevice):
         distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
         return distill_data  # return distill_data instead of individual arrays
 
-    def get_global_logits(self, client_logits):
-        avg_logits = torch.mean(torch.stack(client_logits), dim=0)
-        return avg_logits
-
-    
-    # predicted, soft_sum: Unlabel data도 가능
-    def check_cluster(model):
+    def check_cluster(self, model):
         model.eval()
-
         label_predicted = defaultdict(int)  # Counts of predicted labels
 
         with torch.no_grad():
@@ -379,9 +427,9 @@ class Server(FederatedTrainingDevice):
                 if x.size(0) > 1:
                     y_ = model(x)
                     _, predicted = torch.max(y_.data, 1)
-
                     for label in predicted.tolist():
                         label_predicted[label] += 1
+                print(label_predicted)
 
         return label_predicted
     
@@ -392,22 +440,32 @@ class Server(FederatedTrainingDevice):
         with torch.no_grad():
             for i, (x, y) in enumerate(self.loader):
                 # Evaluate only on 20% of the data
-                if i > len(self.loader) // 20:
+                if i > len(self.loader) // 5:
                     break
 
                 x, y = x.to(device), y.to(device)
 
                 y_ = model(x)
+                # if random.randint(1, 100) == 1:
+                #     print(f'y\'s length: {len(y_[0])}')
+                #     print(f'y: {y_[0]}')
+                    # print(y_[0])
                 _, predicted = torch.max(y_.data, 1)
-
+                # if random.randint(1, 100) == 1:
+                #     print(f'predicted: {predicted[:10]}')
+                #     print(f'y: {y[:10]}')
                 samples += y.shape[0]
                 correct += (predicted == y).sum().item()
-
+                # print(f'samples: {samples}, correct: {correct}, acc: {correct / samples}')
         return correct / samples if samples > 0 else 0
 
     
     def select_clients(self, clients, frac=1.0):
-        return random.sample(clients, int(len(clients) * frac))
+        # Filter clients with more than 5 data points
+        eligible_clients = [client for client in clients if len(client.data) > 5]
+
+        return random.sample(eligible_clients, int(len(eligible_clients) * frac))
+
 
     def aggregate_weight_updates(self, clients):
         reduce_add_average(target=self.W, sources=[client.dW for client in clients])
@@ -428,12 +486,19 @@ class Server(FederatedTrainingDevice):
         clustering = DBSCAN(eps=1.5, min_samples=1).fit(-S)  # eps 0.8 ~ 1로 test
         return clustering.labels_
 
-    def cluster_clients_GMM(S, n_clusters):
-        gmm = GaussianMixture(n_components=n_clusters)
+    def cluster_clients_GMM(self, S, number_of_cluster):
+        gmm = GaussianMixture(n_components=number_of_cluster)
         gmm.fit(S)
-        labels = gmm.predict(S)
-        clusters = [np.argwhere(labels == i).flatten() for i in range(n_clusters)]
-        return clusters
+        labels = np.argmax(gmm.predict_proba(S), axis=1)
+        
+        cluster_idcs = []
+        
+        for cluster in range(number_of_cluster):
+            cluster_idcs.append(np.argwhere(labels == cluster).flatten())
+        # c1 = np.argwhere(labels == 0).flatten()
+        # c2 = np.argwhere(labels == 1).flatten()
+        # c3 = np.argwhere(labels == 2).flatten()
+        return cluster_idcs
 
     def cluster_clients_BGM(self, S):
         bgm = BayesianGaussianMixture(n_components=2)
