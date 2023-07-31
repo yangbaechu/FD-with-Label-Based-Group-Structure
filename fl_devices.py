@@ -8,6 +8,7 @@ from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.utils.data import TensorDataset
+from collections import defaultdict
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -75,50 +76,6 @@ def refine_as_not_true(logits, targets, num_classes):
     logits = torch.gather(logits, 1, nt_positions)
 
     return logits
-
-
-def eval_for_server(model, loader):
-    model.eval()
-    samples, correct = 0, 0
-    from collections import defaultdict
-
-    label_correct = defaultdict(int)  # Counts of correct predictions for each label
-    label_samples = defaultdict(int)  # Counts of total samples for each label
-    label_predicted = defaultdict(int)  # Counts of predicted labels
-    label_soft_sum = defaultdict(float)  # Sum of soft outputs per label
-
-    with torch.no_grad():
-        for i, (x, y) in enumerate(loader):
-            x, y = x.to(device), y.to(device)
-
-            y_ = model(x)
-            soft_output = F.softmax(y_, dim=1)
-            _, predicted = torch.max(y_.data, 1)
-
-            for label in y.tolist():
-                label_samples[label] += 1
-
-            for label in predicted.tolist():
-                label_predicted[label] += 1
-
-            for i, label in enumerate(y.tolist()):
-                label_soft_sum[label] += soft_output[i][label].item()
-
-            correct_preds = predicted == y
-            for label, correct in zip(y.tolist(), correct_preds.tolist()):
-                if correct:
-                    label_correct[label] += 1
-
-    label_accuracies = {
-        label: label_correct.get(label, 0) / label_samples[label]
-        for label in label_samples
-    }
-
-    label_diff = {
-        label: label_predicted[label] - label_samples[label] for label in label_samples
-    }
-
-    return label_accuracies, label_predicted, label_soft_sum, label_diff
 
 
 def copy(target, source):
@@ -253,7 +210,7 @@ class Client(FederatedTrainingDevice):
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
         
         self.id = idnum
-
+f
         self.dW = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
         self.W_old = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
 
@@ -264,30 +221,31 @@ class Client(FederatedTrainingDevice):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
 
-    def distill(self, distill_data, epochs=40, max_grad_norm=1.0):
-        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=512, shuffle=True)
+    def distill(self, distill_data, epochs=40, max_grad_norm=None):
+        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
         copy(target=self.W_old, source=self.W)
 
         # Distillation training
         if self.distill_loader is not None:
             for ep in range(epochs):
+                # print(f'distill epoch {ep + 1}')
                 running_loss, samples = 0.0, 0
                 for x, y, teacher_y in self.distill_loader:
                     x, y, teacher_y = x.to(device), y.to(device), teacher_y.to(device)
 
                     self.optimizer.zero_grad()
 
-                    outputs = self.model(x)        
+                    outputs = self.model(x)
                     loss = self.loss_fn(outputs, y, teacher_y)
                     now_loss = loss.detach().item() * y.shape[0]
 
                     running_loss += now_loss
-                    # if ep % 10 == 0:
-                    #     print(f'loss: {now_loss}')
+                    # print(f'loss: {now_loss}')
                     samples += y.shape[0]
 
                     loss.backward()
-                    
+
+                    # Clip the gradients
                     if max_grad_norm is not None:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
@@ -295,6 +253,7 @@ class Client(FederatedTrainingDevice):
 
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
+
         
     def compute_weight_update(self, epochs=1, loader=None):
         copy(target=self.W_old, source=self.W)
@@ -409,20 +368,22 @@ class Server(FederatedTrainingDevice):
 
     
     # predicted, soft_sum: Unlabel data도 가능
-    def evaluate(self, model):
-        (
-            label_accuracies,
-            label_predicted,
-            label_soft_sum,
-            label_diff,
-        ) = eval_for_server(model, self.loader)
+    def check_cluster(model):
+        model.eval()
 
-        return (
-            label_accuracies,
-            label_predicted,
-            label_soft_sum,
-            label_diff,
-        )
+        label_predicted = defaultdict(int)  # Counts of predicted labels
+
+        with torch.no_grad():
+            for i, (x, y) in enumerate(self.loader):
+                x, y = x.to(device), y.to(device)
+                if x.size(0) > 1:
+                    y_ = model(x)
+                    _, predicted = torch.max(y_.data, 1)
+
+                    for label in predicted.tolist():
+                        label_predicted[label] += 1
+
+        return label_predicted
     
     def evaluate_distil(self, model):
         model.eval()  # Set model to evaluation mode
@@ -467,14 +428,12 @@ class Server(FederatedTrainingDevice):
         clustering = DBSCAN(eps=1.5, min_samples=1).fit(-S)  # eps 0.8 ~ 1로 test
         return clustering.labels_
 
-    def cluster_clients_GMM(self, S):
-        gmm = GaussianMixture(n_components=3)
+    def cluster_clients_GMM(S, n_clusters):
+        gmm = GaussianMixture(n_components=n_clusters)
         gmm.fit(S)
-        labels = np.argmax(gmm.predict_proba(S), axis=1)
-        c1 = np.argwhere(labels == 0).flatten()
-        c2 = np.argwhere(labels == 1).flatten()
-        c3 = np.argwhere(labels == 1).flatten()
-        return c1, c2, c3
+        labels = gmm.predict(S)
+        clusters = [np.argwhere(labels == i).flatten() for i in range(n_clusters)]
+        return clusters
 
     def cluster_clients_BGM(self, S):
         bgm = BayesianGaussianMixture(n_components=2)

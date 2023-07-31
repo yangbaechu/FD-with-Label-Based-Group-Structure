@@ -113,31 +113,57 @@ def split_not_contain_every_class(train_idcs, train_labels, n_clients):
     return client_idcs
 
 
+def split_contain_3class(train_idcs, train_labels, n_clients, client_distribution=[0.5, 0.3, 0.2], seed=123):
+    
+    np.random.seed(seed)
+    
+    n_classes = 10
+    classes_per_group = 3
+    data_per_class = 50
+
+    # Number of clients per group based on the given distribution
+    clients_per_group = [int(dist * n_clients) for dist in client_distribution]
+    idx_batch = [[] for _ in range(n_clients)]
+    
+    for group in range(n_classes // classes_per_group):
+        for y in range(group * classes_per_group, (group + 1) * classes_per_group):
+            if y >= n_classes:
+                continue
+            idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs, dtype=int)] == y).flatten().tolist()
+            np.random.shuffle(idx_y)
+            idx_y = idx_y[:data_per_class * clients_per_group[group]]  # Only take the first 50 * clients_per_group data
+            
+            # Split indices of the same class into multiple chunks
+            idx_y_split = np.array_split(idx_y, clients_per_group[group])
+
+            # Assign each chunk to a different client
+            for i in range(clients_per_group[group]):
+                client_id = sum(clients_per_group[:group]) + i
+                idx_batch[client_id] += idx_y_split[i].tolist()
+
+    net_dataidx_map = [train_idcs[np.array(idcs, dtype=int)] for idcs in idx_batch] 
+    
+    return net_dataidx_map
+
+
 def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     
     n_class = 10
     server_idcs = []
-    remaining_indices = []
 
     class_idcs = [np.argwhere(np.array(test_labels)[test_idcs] == y).flatten().tolist() for y in range(n_class)]
     
     for class_num, class_index in enumerate(class_idcs):
-        if len(class_index) >= target_class_data_count:
-            server_idcs.extend(test_idcs[class_index[:target_class_data_count]])
-        else:
-            server_idcs.extend(test_idcs[class_index])
-            remaining_indices.extend(test_idcs[class_index[target_class_data_count:]])
+        if len(class_index) < target_class_data_count:
+            print(f"Class {class_num} does not have enough samples, skipping...")
+            continue
 
-    # If not all classes had enough samples, fill up server_idcs with remaining indices
-    while len(server_idcs) < target_class_data_count * n_class and remaining_indices:
-        server_idcs.append(remaining_indices.pop())
+        server_idcs.extend(class_index[:target_class_data_count])
 
     # Convert to numpy array
     server_idcs = np.array(server_idcs)
 
     return server_idcs
-
-
 
 
 
