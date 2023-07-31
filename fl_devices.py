@@ -210,7 +210,7 @@ class Client(FederatedTrainingDevice):
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
         
         self.id = idnum
-f
+
         self.dW = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
         self.W_old = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
 

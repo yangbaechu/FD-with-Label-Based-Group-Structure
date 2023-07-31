@@ -151,7 +151,9 @@ def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     n_class = 10
     server_idcs = []
 
+    test_idcs = np.array(test_idcs, dtype=int) # Ensure that test_idcs is an array of integers
     class_idcs = [np.argwhere(np.array(test_labels)[test_idcs] == y).flatten().tolist() for y in range(n_class)]
+
     
     for class_num, class_index in enumerate(class_idcs):
         if len(class_index) < target_class_data_count:
