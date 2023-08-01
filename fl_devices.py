@@ -9,7 +9,8 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.utils.data import TensorDataset
 from collections import defaultdict
-
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Subset
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -221,12 +222,18 @@ class Client(FederatedTrainingDevice):
         self.optimizer = optimizer_fn(self.model.parameters())
 
         self.data = data
+
+        # Extract the features and labels from the data
+        indices = list(range(len(data)))
+        labels = [label for _, label in data]
+
+        # Split the indices into training and evaluation sets, maintaining the same distribution of labels
+        train_indices, eval_indices, _, _ = train_test_split(indices, labels, train_size=train_frac, stratify=labels)
         
-        n_train = int(len(data) * train_frac)
-        n_eval = len(data) - n_train
-        
-        data_train, data_eval = torch.utils.data.random_split(self.data, [n_train, n_eval])
-        
+        # Create subsets using the split indices
+        data_train = Subset(data, train_indices)
+        data_eval = Subset(data, eval_indices)
+
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
         
@@ -236,6 +243,17 @@ class Client(FederatedTrainingDevice):
         self.W_old = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
 
         self.loss_fn = ClusterDistillationLoss()
+        
+#         train_labels = [label for _, label in data_train]
+#         eval_labels = [label for _, label in data_eval]
+        
+#         # Compute the distribution using Counter
+#         train_label_distribution = Counter(train_labels)
+#         eval_label_distribution = Counter(eval_labels)
+
+#         # Print the distributions
+#         print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
+#         print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
