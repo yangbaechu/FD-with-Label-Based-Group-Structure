@@ -183,6 +183,14 @@ def split_contain_3class_unbalanced(train_idcs, train_labels, n_clients, cluster
 
     net_dataidx_map = [train_idcs[np.array(idcs, dtype=int)] for idcs in idx_batch] 
     
+    # # print class distribution for each client
+    # print("Class distribution per client:")
+    # for i, idcs in enumerate(idx_batch):
+    #     class_counts = {label:0 for label in range(n_classes)}
+    #     for idx in idcs:
+    #         class_counts[train_labels[train_idcs[idx]]] += 1
+    #     print(f"Client {i}: {class_counts}")
+    
     return net_dataidx_map
 
 
