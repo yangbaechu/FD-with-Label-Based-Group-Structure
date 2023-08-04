@@ -27,6 +27,10 @@ def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
         
         if x.size(0) > 1:
             outputs = model(x)
+            r = random.random()
+            if r < 1/500:
+                print('output in train')
+                print(torch.max(outputs.data, 1)[:10])
             loss = criterion(outputs, y)
 
             # Check if loss is valid
@@ -47,10 +51,6 @@ def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
         else:
             print("Batch size is 1, skipping this batch")
             
-    # Switch back to evaluation mode
-    model.eval()
-    # print(f"running_loss: {running_loss}")
-    # print(f"samples:{samples}")
     return running_loss / samples
 
 
@@ -244,16 +244,16 @@ class Client(FederatedTrainingDevice):
 
         self.loss_fn = ClusterDistillationLoss()
         
-#         train_labels = [label for _, label in data_train]
-#         eval_labels = [label for _, label in data_eval]
+        train_labels = [label for _, label in data_train]
+        eval_labels = [label for _, label in data_eval]
         
-#         # Compute the distribution using Counter
-#         train_label_distribution = Counter(train_labels)
-#         eval_label_distribution = Counter(eval_labels)
+        # Compute the distribution using Counter
+        train_label_distribution = Counter(train_labels)
+        eval_label_distribution = Counter(eval_labels)
 
-#         # Print the distributions
-#         print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
-#         print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
+        # Print the distributions
+        print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
+        print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
@@ -308,6 +308,8 @@ class Client(FederatedTrainingDevice):
                 running_loss, samples = 0.0, 0
                 for x, teacher_y in self.distill_loader:
                     x, teacher_y = x.to(device), teacher_y.to(device)
+                    # print('teacher_y')
+                    # print(teacher_y[:5])
 
                     self.optimizer.zero_grad()
 
@@ -444,10 +446,19 @@ class Server(FederatedTrainingDevice):
                 x, y = x.to(device), y.to(device)
                 if x.size(0) > 1:
                     y_ = model(x)
+                    r =  random.random()
+                    if r < 1/100:
+                        print(y_[:4])
+                        print(y_.data[:4])
                     _, predicted = torch.max(y_.data, 1)
+                    if r < 1/100:
+                        print(predicted)
                     for label in predicted.tolist():
                         label_predicted[label] += 1
-                print(label_predicted)
+                else:
+                    print("x is only one!")
+                    # print('predicted label')
+                    # print(label_predicted)
 
         return label_predicted
     

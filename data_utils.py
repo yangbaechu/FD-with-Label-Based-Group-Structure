@@ -159,7 +159,7 @@ def split_contain_3class_unbalanced(train_idcs, train_labels, n_clients, cluster
     
     n_classes = 10
     classes_per_group = 3
-    data_per_class = 50
+    data_per_class = 1000
 
     # Number of clients per group based on the given distribution
     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
