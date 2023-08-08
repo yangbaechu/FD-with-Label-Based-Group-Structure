@@ -404,7 +404,7 @@ class Server(FederatedTrainingDevice):
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
 
-    def get_clients_logit(self, model, data_per_class):
+    def get_clients_logit(self, model):
         model.eval()  # set teacher model to eval mode
         all_outputs = []
         all_inputs = []
@@ -415,7 +415,9 @@ class Server(FederatedTrainingDevice):
             for data, labels in self.loader:
                 data, labels = data.to(device), labels.to(device)
                 output = model(data)
-
+                if random.random() < 1/100:
+                    print('output of get_client_logit')
+                    print(torch.max(output.data, 1)[:10])
                 for i in range(len(labels)):
                     label = labels[i]
                     all_outputs.append(output[i].unsqueeze(0))  # appending 2D tensor of shape [1, 62]
