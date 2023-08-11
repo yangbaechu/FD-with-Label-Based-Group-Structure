@@ -254,9 +254,10 @@ class Client(FederatedTrainingDevice):
         train_label_distribution = Counter(train_labels)
         eval_label_distribution = Counter(eval_labels)
 
-        # # Print the distributions
-        # print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
-        # print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
+        # Print the distributions
+        if self.id % 10 == 0:
+            print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
+            print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
@@ -311,8 +312,6 @@ class Client(FederatedTrainingDevice):
                 running_loss, samples = 0.0, 0
                 for x, teacher_y in self.distill_loader:
                     x, teacher_y = x.to(device), teacher_y.to(device)
-                    # print('teacher_y')
-                    # print(teacher_y[:5])
 
                     self.optimizer.zero_grad()
 
@@ -321,17 +320,19 @@ class Client(FederatedTrainingDevice):
                     now_loss = loss.detach().item() * x.shape[0]
 
                     running_loss += now_loss
-                    if ep % 5 == 0 and self.id % 50 == 0:
-                        print(f'distill epoch {ep}, loss: {now_loss}')
-                        
                     samples += x.shape[0]
-                    
+
                     loss.backward()
-                    
+
                     if max_grad_norm is not None:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
                     self.optimizer.step()
+
+                if ep % 5 == 0 and self.id % 50 == 0:
+                    average_loss = running_loss / samples
+                    print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}')
+
 
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
