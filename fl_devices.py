@@ -256,8 +256,8 @@ class Client(FederatedTrainingDevice):
 
         # Print the distributions
         if self.id % 10 == 0:
-            print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
-            print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
+            print(f"Train Labels client {self.id}: {train_label_distribution}")
+            print(f"Evaluation Labels client {self.id}: {eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)

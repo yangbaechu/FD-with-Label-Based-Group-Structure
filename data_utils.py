@@ -153,7 +153,7 @@ def split_contain_2class(train_idcs, train_labels, n_clients, seed=123):
     return net_dataidx_map
 
 
-def split_contain_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution=[0.5, 0.3, 0.2], seed=123):
+def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution=[0.5, 0.3, 0.2], seed=123):
     
     np.random.seed(seed)
     
@@ -193,6 +193,50 @@ def split_contain_3class_unbalanced(train_idcs, train_labels, n_clients, cluster
     
     return net_dataidx_map
 
+
+def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution=[0.5, 0.3, 0.2], seed=123):
+    np.random.seed(seed)
+    
+    n_classes = 10
+    classes_per_group = 3
+    data_per_class_3 = 50
+    data_per_class_7 = 10
+
+    # Number of clients per group based on the given distribution
+    clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
+    idx_batch = [[] for _ in range(n_clients)]
+    
+    for group in range(n_classes // classes_per_group):
+        assigned_classes = list(range(group * classes_per_group, (group + 1) * classes_per_group))
+        remaining_classes = [i for i in range(n_classes) if i not in assigned_classes]
+
+        # Distributing the first 3 classes
+        for y in assigned_classes:
+            if y >= n_classes:
+                continue
+            idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs, dtype=int)] == y).flatten().tolist()
+            np.random.shuffle(idx_y)
+            idx_y = idx_y[:data_per_class_3 * clients_per_group[group]]  
+            
+            idx_y_split = np.array_split(idx_y, clients_per_group[group])
+            for i in range(clients_per_group[group]):
+                client_id = sum(clients_per_group[:group]) + i
+                idx_batch[client_id] += idx_y_split[i].tolist()
+
+        # Distributing the remaining 7 classes for this group
+        for y in remaining_classes:
+            idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs, dtype=int)] == y).flatten().tolist()
+            np.random.shuffle(idx_y)
+            idx_y = idx_y[:data_per_class_7 * clients_per_group[group]] 
+            
+            idx_y_split = np.array_split(idx_y, clients_per_group[group])
+            for i in range(clients_per_group[group]):
+                client_id = sum(clients_per_group[:group]) + i
+                idx_batch[client_id] += idx_y_split[i].tolist()
+
+    net_dataidx_map = [train_idcs[np.array(idcs, dtype=int)] for idcs in idx_batch] 
+    
+    return net_dataidx_map
 
 
 # def split_not_contain_every_class(train_idcs, train_labels, n_clients):
