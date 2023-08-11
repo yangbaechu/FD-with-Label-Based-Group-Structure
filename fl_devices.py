@@ -28,9 +28,9 @@ def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
         if x.size(0) > 1:
             outputs = model(x)
             r = random.random()
-            if r < 1/500:
-                print('output in train')
-                print(torch.max(outputs.data, 1)[:10])
+            # if r < 1/500:
+            #     print('output in train')
+            #     print(torch.max(outputs.data, 1)[:10])
             loss = criterion(outputs, y)
 
             # Check if loss is valid
@@ -155,8 +155,11 @@ class NTD_Loss(nn.Module):
     
 class FederatedTrainingDevice(object):
     def __init__(self, model_fn, data):
-        self.model = model_fn(weights="IMAGENET1K_V2")
-        self.model.classifier[3] = torch.nn.Linear(in_features=self.model.classifier[3].in_features, out_features=10)
+        self.model = model_fn()
+        
+#         self.model.conv1 = torch.nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1)
+
+#         self.model.classifier[3] = torch.nn.Linear(in_features=self.model.classifier[3].in_features, out_features=10)
         # self.model.num_classes = 10
         # self.model.fc = nn.Linear(self.model.fc.in_features, 10) # Resnet 
         # self.model.classifier[1] = torch.nn.Linear(self.model.classifier[3].in_features, 10) #MobileNet
@@ -251,9 +254,9 @@ class Client(FederatedTrainingDevice):
         train_label_distribution = Counter(train_labels)
         eval_label_distribution = Counter(eval_labels)
 
-        # Print the distributions
-        print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
-        print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
+        # # Print the distributions
+        # print(f"Train Label Distribution for client {self.id}: {train_label_distribution}")
+        # print(f"Evaluation Label Distribution for client {self.id}: {eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
@@ -415,9 +418,8 @@ class Server(FederatedTrainingDevice):
             for data, labels in self.loader:
                 data, labels = data.to(device), labels.to(device)
                 output = model(data)
-                if random.random() < 1/100:
-                    print('output of get_client_logit')
-                    print(torch.max(output.data, 1)[:10])
+                # if random.random() < 1/100:
+                #     print(torch.max(output.data, 1)[:10])
                 for i in range(len(labels)):
                     label = labels[i]
                     all_outputs.append(output[i].unsqueeze(0))  # appending 2D tensor of shape [1, 62]
@@ -449,12 +451,12 @@ class Server(FederatedTrainingDevice):
                 if x.size(0) > 1:
                     y_ = model(x)
                     r =  random.random()
-                    if r < 1/100:
-                        print(y_[:4])
-                        print(y_.data[:4])
+                    # if r < 1/100:
+                    #     print(y_[:4])
+                    #     print(y_.data[:4])
                     _, predicted = torch.max(y_.data, 1)
-                    if r < 1/100:
-                        print(predicted)
+                    # if r < 1/100:
+                    #     print(predicted)
                     for label in predicted.tolist():
                         label_predicted[label] += 1
                 else:
