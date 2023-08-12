@@ -14,6 +14,16 @@ from torch.utils.data import Subset
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
+def cutout_and_rotate(image):
+    image = image.clone().detach() # 얕은 복사 문제 주의(원본 유지)
+    x_start = np.random.randint(20) # cut out 시작할 x축 위치(0~19 중 1개)
+    y_start = np.random.randint(20) # cut out 시작할 y축 위치(0~19 중 1개)
+
+    image[..., x_start:x_start+9, y_start:y_start+9] = 255 / 2 # 해당 부분 회색 마킹
+    return torch.rot90(image, 1, [-2, -1]) # 마지막 두 axis 기준 90도 회전
+
+
 def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
     model.train()
 
@@ -116,6 +126,75 @@ def pairwise_angles(sources):
             )
 
     return angles.numpy()
+
+
+class SimCLR_Loss(nn.Module):
+    def __init__(self, batch_size, temperature):
+        super().__init__()
+        self.batch_size = batch_size
+        self.temperature = temperature
+
+        self.mask = self.mask_correlated_samples(batch_size)
+        self.criterion = nn.CrossEntropyLoss(reduction="sum")
+        self.similarity_f = nn.CosineSimilarity(dim=2)
+
+    # loss 분모 부분의 negative sample 간의 내적 합만을 가져오기 위한 마스킹 행렬
+    def mask_correlated_samples(self, batch_size):
+        N = 2 * batch_size
+        mask = torch.ones((N, N), dtype=bool)
+        mask = mask.fill_diagonal_(0)
+        
+        for i in range(batch_size):
+            mask[i, batch_size + i] = 0
+            mask[batch_size + i, i] = 0
+        return mask
+
+    def forward(self, z_i, z_j):
+
+        N = 2 * self.batch_size
+
+        z = torch.cat((z_i, z_j), dim=0)
+
+        sim = self.similarity_f(z.unsqueeze(1), z.unsqueeze(0)) / self.temperature
+
+        # loss 분자 부분의 원본 - augmentation 이미지 간의 내적 합을 가져오기 위한 부분
+        sim_i_j = torch.diag(sim, self.batch_size)
+        sim_j_i = torch.diag(sim, -self.batch_size)
+        
+        positive_samples = torch.cat((sim_i_j, sim_j_i), dim=0).reshape(N, 1)
+        negative_samples = sim[self.mask].reshape(N, -1)
+
+
+        labels = torch.from_numpy(np.array([0]*N)).reshape(-1).to(positive_samples.device).long()
+
+        logits = torch.cat((positive_samples, negative_samples), dim=1)
+        loss = self.criterion(logits, labels)
+        loss /= N
+        
+        return loss
+    
+    
+class Representation(nn.Module):
+    def __init__(self):
+        super(Representation, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=10, kernel_size=5, stride=1)
+        self.conv2 = nn.Conv2d(in_channels=10, out_channels=20, kernel_size=5, stride=1)
+        self.fc = nn.Linear(4 * 4 * 20, 100)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x)) # (batch, 1, 28, 28) -> (batch, 10, 24, 24)
+
+        x = F.max_pool2d(x, kernel_size=2, stride=2) # (batch, 10, 24, 24) -> (batch, 10, 12, 12)
+
+        x = F.relu(self.conv2(x)) # (batch, 10, 12, 12) -> (batch, 20, 8, 8)
+
+        x = F.max_pool2d(x, kernel_size=2, stride=2) # (batch, 20, 8, 8) -> (batch, 20, 4, 4)
+
+        x = x.view(-1, 4 * 4 * 20) # (batch, 20, 4, 4) -> (batch, 320)
+
+        x = F.relu(self.fc(x)) # (batch, 320) -> (batch, 100)
+        return x # (batch, 100)
+    
 
 class NTD_Loss(nn.Module):
     """Not-true Distillation Loss"""
@@ -262,6 +341,42 @@ class Client(FederatedTrainingDevice):
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
+    
+    def learn_representation(X_train, model):
+        X_train_aug = cutout_and_rotate(X_train) # 각 X_train 데이터에 대하여 augmentation
+        X_train_aug = X_train_aug.to(device) # 학습을 위하여 GPU에 선언
+        dataset = TensorDataset(X_train, X_train_aug) # augmentation된 데이터와 pair
+        
+        batch_size = 100
+
+        dataloader = DataLoader(dataset, batch_size = batch_size)
+        
+        loss_func = SimCLR_Loss(batch_size, temperature = 0.5) # loss 함수 선언
+        
+        epochs = 10
+        
+        model.to(device)
+        model.train()
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+        if self.id % 30 == 0:
+            print(f'Client {self.id}')
+
+        for i in range(1, epochs + 1):
+            total_loss = 0
+            for data in tqdm(dataloader):
+                origin_vec = model(data[0])
+                aug_vec = model(data[1])
+
+                loss = loss_func(origin_vec, aug_vec)
+                total_loss += loss.item()
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            
+            if self.id % 30 == 0:
+                print('Epoch : %d, Avg Loss : %.4f'%(i, total_loss / len(dataloader)))
 
     def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
