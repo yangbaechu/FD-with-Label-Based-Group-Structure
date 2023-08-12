@@ -11,6 +11,8 @@ from torch.utils.data import TensorDataset
 from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Subset
+from tqdm.notebook import tqdm
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -172,29 +174,7 @@ class SimCLR_Loss(nn.Module):
         loss /= N
         
         return loss
-    
-    
-class Representation(nn.Module):
-    def __init__(self):
-        super(Representation, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=10, kernel_size=5, stride=1)
-        self.conv2 = nn.Conv2d(in_channels=10, out_channels=20, kernel_size=5, stride=1)
-        self.fc = nn.Linear(4 * 4 * 20, 100)
 
-    def forward(self, x):
-        x = F.relu(self.conv1(x)) # (batch, 1, 28, 28) -> (batch, 10, 24, 24)
-
-        x = F.max_pool2d(x, kernel_size=2, stride=2) # (batch, 10, 24, 24) -> (batch, 10, 12, 12)
-
-        x = F.relu(self.conv2(x)) # (batch, 10, 12, 12) -> (batch, 20, 8, 8)
-
-        x = F.max_pool2d(x, kernel_size=2, stride=2) # (batch, 20, 8, 8) -> (batch, 20, 4, 4)
-
-        x = x.view(-1, 4 * 4 * 20) # (batch, 20, 4, 4) -> (batch, 320)
-
-        x = F.relu(self.fc(x)) # (batch, 320) -> (batch, 100)
-        return x # (batch, 100)
-    
 
 class NTD_Loss(nn.Module):
     """Not-true Distillation Loss"""
@@ -342,7 +322,8 @@ class Client(FederatedTrainingDevice):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
     
-    def learn_representation(X_train, model):
+    # X_train 증강을 통해 Representaion Learning
+    def learn_representation(self, X_train, model):
         X_train_aug = cutout_and_rotate(X_train) # 각 X_train 데이터에 대하여 augmentation
         X_train_aug = X_train_aug.to(device) # 학습을 위하여 GPU에 선언
         dataset = TensorDataset(X_train, X_train_aug) # augmentation된 데이터와 pair
