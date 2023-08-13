@@ -7,11 +7,12 @@ from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
 import torch.nn.functional as F
 import torch.nn as nn
-from torch.utils.data import TensorDataset
+from torch.utils.data import TensorDataset, DataLoader, Subset, Dataset
 from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Subset
 from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -128,6 +129,19 @@ def pairwise_angles(sources):
 
     return angles.numpy()
 
+class MajorClassFilterDataset(Dataset):
+    def __init__(self, dataset, major_classes):
+        self.dataset = dataset
+        self.major_classes = major_classes
+        
+        # Filter indices that have labels in major_classes
+        self.indices = [i for i in range(len(dataset)) if dataset[i][1] in self.major_classes]
+
+    def __getitem__(self, index):
+        return self.dataset[self.indices[index]]
+
+    def __len__(self):
+        return len(self.indices)
 
 class SimCLR_Loss(nn.Module):
     def __init__(self, batch_size, temperature):
@@ -309,6 +323,10 @@ class Client(FederatedTrainingDevice):
         self.major_class = major_class
         self.minor_class = [i for i in range(10) if i not in self.major_class]
         
+        # Assuming you have defined self.major_class and data_train
+        major_class_dataset = MajorClassFilterDataset(data_train, self.major_class)
+        self.major_class_dataloader = DataLoader(major_class_dataset, batch_size=32, shuffle=True)
+        
         train_labels = [label for _, label in data_train]
         eval_labels = [label for _, label in data_eval]
         
@@ -327,7 +345,6 @@ class Client(FederatedTrainingDevice):
     
     # train_data 증강을 통해 Representaion Learning
     def learn_representation(self, train_data, model):
-        
         # Extract X_train from train_data
         X_train = [data[0] for data in train_data]
         X_train = torch.stack(X_train)
@@ -417,7 +434,7 @@ class Client(FederatedTrainingDevice):
             #     print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
     
     
-    def train_ten_class_classifier(self):        
+    def train_major_class_classifier(self):        
         classifier = Ten_class_classifier(self.model).to(device)
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
@@ -428,7 +445,7 @@ class Client(FederatedTrainingDevice):
             
         for i in range(1, epochs + 1):
             correct = 0
-            for data, labels in self.train_loader:
+            for data, labels in self.major_class_dataloader:
                 data, labels = data.to(device), labels.to(device)
                 
                 logits = classifier(data)
@@ -438,7 +455,7 @@ class Client(FederatedTrainingDevice):
                 loss.backward()
                 optimizer.step()
 
-                correct += torch.sum(torch.argmax(logits, 1) == labels).item()
+                correct += torch.sum(torch.argmax(logits, 1) == labels).item()F
             if self.id % 10 == 0:
                 print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(self.data_train)))
                 
