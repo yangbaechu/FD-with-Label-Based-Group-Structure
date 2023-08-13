@@ -11,8 +11,7 @@ from torch.utils.data import TensorDataset
 from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Subset
-from tqdm.notebook import tqdm
-
+from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -278,9 +277,9 @@ class ClusterDistillationLoss(nn.Module):
         return cluster_loss + global_loss
 
 class Client(FederatedTrainingDevice):
-    def __init__(self, model_fn, optimizer_fn, data, idnum, batch_size=128, train_frac=0.7):
+    def __init__(self, model_fn, optimizer_fn, data, major_class, idnum, batch_size=128, train_frac=0.7):
         super().__init__(model_fn, data)
-        
+
         self.optimizer = optimizer_fn(self.model.parameters())
 
         self.data = data
@@ -295,6 +294,7 @@ class Client(FederatedTrainingDevice):
         # Create subsets using the split indices
         data_train = Subset(data, train_indices)
         data_eval = Subset(data, eval_indices)
+        self.data_train = data_train
 
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
@@ -305,6 +305,9 @@ class Client(FederatedTrainingDevice):
         self.W_old = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
 
         self.loss_fn = ClusterDistillationLoss()
+        
+        self.major_class = major_class
+        self.minor_class = [i for i in range(10) if i not in self.major_class]
         
         train_labels = [label for _, label in data_train]
         eval_labels = [label for _, label in data_eval]
@@ -322,8 +325,14 @@ class Client(FederatedTrainingDevice):
         copy(target=self.W, source=server.W)
         self.W_original = self.W
     
-    # X_train 증강을 통해 Representaion Learning
-    def learn_representation(self, X_train, model):
+    # train_data 증강을 통해 Representaion Learning
+    def learn_representation(self, train_data, model):
+        
+        # Extract X_train from train_data
+        X_train = [data[0] for data in train_data]
+        X_train = torch.stack(X_train)
+        X_train = X_train.to(device)
+        
         X_train_aug = cutout_and_rotate(X_train) # 각 X_train 데이터에 대하여 augmentation
         X_train_aug = X_train_aug.to(device) # 학습을 위하여 GPU에 선언
         dataset = TensorDataset(X_train, X_train_aug) # augmentation된 데이터와 pair
@@ -340,12 +349,12 @@ class Client(FederatedTrainingDevice):
         model.train()
 
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-        if self.id % 30 == 0:
-            print(f'Client {self.id}')
+        if self.id % 10 == 0:
+            print(f'Representation Learning on Client {self.id}')
 
         for i in range(1, epochs + 1):
             total_loss = 0
-            for data in tqdm(dataloader):
+            for data in dataloader:
                 origin_vec = model(data[0])
                 aug_vec = model(data[1])
 
@@ -356,9 +365,84 @@ class Client(FederatedTrainingDevice):
                 loss.backward()
                 optimizer.step()
             
-            if self.id % 30 == 0:
-                print('Epoch : %d, Avg Loss : %.4f'%(i, total_loss / len(dataloader)))
+            # if self.id % 30 == 0:
+            #     print('Epoch : %d, Avg Loss : %.4f'%(i, total_loss / len(dataloader)))
+    
+    # Client Data를 두 클래스로 분류하는 것 학습
+    def train_two_class_classifier(self):
+        # 1. prepare dataset
+        images = []
+        targets = []
 
+        for image, target in self.data:
+            if target in self.major_class:
+                images.append(image)
+                targets.append(0)
+        
+            else:
+                images.append(image)
+                targets.append(1)
+
+        # Convert to PyTorch tensors
+        images = torch.stack(images)
+        targets = torch.tensor(targets, dtype=torch.long)
+
+        # Create a TensorDataset with the selected instances and modified labels
+        subset = TensorDataset(images, targets)
+        class_dataloader = DataLoader(subset, batch_size=64, shuffle=True)
+                                
+        # 2. 학습 진행
+        classifier = Two_class_classifier(self.model).to(device)
+        classifier_loss = nn.CrossEntropyLoss()
+        epochs = 10
+        classifier.train()
+        optimizer = torch.optim.Adam(classifier.parameters(), lr=1e-4)
+        # if self.id % 10 == 0:
+        #     print(f'client {self.id}')
+            
+        for i in range(1, epochs + 1):
+            correct = 0
+            for data, labels in class_dataloader:
+                data, labels = data.to(device), labels.to(device)
+
+                logits = classifier(data)
+                loss = classifier_loss(logits, labels)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                correct += torch.sum(torch.argmax(logits, 1) == labels).item()
+            # if self.id % 10 == 0:
+            #     print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
+    
+    
+    def train_ten_class_classifier(self):        
+        classifier = Ten_class_classifier(self.model).to(device)
+        classifier_loss = nn.CrossEntropyLoss()
+        epochs = 10
+        classifier.train()
+        optimizer = torch.optim.Adam(classifier.parameters(), lr=1e-4)
+        if self.id % 10 == 0:
+            print(f'client {self.id}')
+            
+        for i in range(1, epochs + 1):
+            correct = 0
+            for data, labels in self.train_loader:
+                data, labels = data.to(device), labels.to(device)
+                
+                logits = classifier(data)
+                loss = classifier_loss(logits, labels)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                correct += torch.sum(torch.argmax(logits, 1) == labels).item()
+            if self.id % 10 == 0:
+                print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(self.data_train)))
+                
+                
     def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
         copy(target=self.W_old, source=self.W)
