@@ -240,7 +240,7 @@ class FederatedTrainingDevice(object):
         self.W = {key: value for key, value in self.model.named_parameters()}
 
     def evaluate(self, loader=None):
-        return eval_op(self.model, self.eval_loader if not loader else loader)
+        return eval_op(self.classifier, self.eval_loader if not loader else loader)
 
 
 class DistillationLoss(nn.Module):
@@ -293,8 +293,10 @@ class ClusterDistillationLoss(nn.Module):
 class Client(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data, major_class, idnum, batch_size=128, train_frac=0.7):
         super().__init__(model_fn, data)
-
-        self.optimizer = optimizer_fn(self.model.parameters())
+        
+        self.binary_classifier = Two_class_classifier(self.model).to(device)
+        self.classifier = Ten_class_classifier(self.model).to(device)
+        self.optimizer = optimizer_fn(self.classifier.parameters())
 
         self.data = data
 
@@ -409,11 +411,10 @@ class Client(FederatedTrainingDevice):
         class_dataloader = DataLoader(subset, batch_size=64, shuffle=True)
                                 
         # 2. 학습 진행
-        classifier = Two_class_classifier(self.model).to(device)
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
-        classifier.train()
-        optimizer = torch.optim.Adam(classifier.parameters(), lr=1e-4)
+        self.binary_classifier.train()
+        optimizer = torch.optim.Adam(self.binary_classifier.parameters(), lr=1e-4)
         # if self.id % 10 == 0:
         #     print(f'client {self.id}')
             
@@ -422,7 +423,7 @@ class Client(FederatedTrainingDevice):
             for data, labels in class_dataloader:
                 data, labels = data.to(device), labels.to(device)
 
-                logits = classifier(data)
+                logits = self.binary_classifier(data)
                 loss = classifier_loss(logits, labels)
 
                 optimizer.zero_grad()
@@ -435,11 +436,10 @@ class Client(FederatedTrainingDevice):
     
     
     def train_major_class_classifier(self):        
-        classifier = Ten_class_classifier(self.model).to(device)
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
-        classifier.train()
-        optimizer = torch.optim.Adam(classifier.parameters(), lr=1e-4)
+        self.classifier.train()
+        optimizer = torch.optim.Adam(self.classifier.parameters(), lr=1e-4)
         if self.id % 10 == 0:
             print(f'client {self.id}')
             
@@ -448,14 +448,14 @@ class Client(FederatedTrainingDevice):
             for data, labels in self.major_class_dataloader:
                 data, labels = data.to(device), labels.to(device)
                 
-                logits = classifier(data)
+                logits = self.classifier(data)
                 loss = classifier_loss(logits, labels)
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-                correct += torch.sum(torch.argmax(logits, 1) == labels).item()F
+                correct += torch.sum(torch.argmax(logits, 1) == labels).item()
             if self.id % 10 == 0:
                 print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(self.data_train)))
                 
@@ -638,7 +638,42 @@ class Server(FederatedTrainingDevice):
         
         distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
         return distill_data  # return distill_data instead of individual arrays
+    
+    
+    def get_clients_logit_2(self, binary_classifier, classifier):
+        binary_classifier.eval()  # set binary_classifier to eval mode
+        classifier.eval()  # set classifier to eval mode
 
+        all_outputs = []
+        minor_class_count = 0
+        
+        for data, labels in self.loader:
+            data, labels = data.to(device), labels.to(device)
+
+            # First use binary classifier to infer major class
+            binary_output = binary_classifier(data)
+            major_class_predictions = torch.argmax(binary_output, dim=1)
+
+            for i in range(len(labels)):
+                input_data = data[i].unsqueeze(0)
+
+                if major_class_predictions[i] == 1:  # If major class
+                    output = classifier(input_data)
+                    probs = torch.softmax(output, dim=1)
+                    all_outputs.append(probs.squeeze(0))  # Ensure the shape matches
+                else: 
+                    minor_class_count + 1
+                    placeholder = torch.full((1, 10), -1).to(device)
+                    all_outputs.append(placeholder.squeeze(0))
+                
+        # Convert list of tensors into a single 2D tensor
+        all_outputs = torch.stack(all_outputs)
+        
+        print(f"Number of samples predicted as minor class: {minor_class_count}")
+        
+        return all_outputs
+
+    
     def check_cluster(self, model):
         model.eval()
         label_predicted = defaultdict(int)  # Counts of predicted labels
