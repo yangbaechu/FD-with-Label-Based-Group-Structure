@@ -1,5 +1,5 @@
 import numpy as np
-from torch.utils.data import Subset
+from torch.utils.data import Dataset, Subset
 import math
 
 
@@ -245,7 +245,7 @@ def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_di
     n_classes = 10
     classes_per_group = 3
     data_per_class_3 = 280
-    data_per_class_7 = 100
+    data_per_class_7 = 120
 
     # Number of clients per group based on the given distribution
     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
@@ -378,3 +378,25 @@ class CustomSubset(Subset):
             x = self.subset_transform(x)
 
         return x, y
+    
+class CombinedCustomSubset(Dataset):
+    """A combined custom subset class for both server and client data"""
+
+    def __init__(self, dataset, server_idcs, client_idcs, subset_transform=None):
+        self.dataset = dataset
+        self.server_idcs = server_idcs
+        self.client_idcs = client_idcs
+        self.subset_transform = subset_transform
+        self.total_indices = server_idcs + client_idcs
+
+    def __getitem__(self, idx):
+        true_idx = self.total_indices[idx]
+        x, y = self.dataset[true_idx]
+
+        if self.subset_transform and (true_idx in self.server_idcs):
+            x = self.subset_transform(x)
+
+        return x, y
+
+    def __len__(self):
+        return len(self.total_indices)
