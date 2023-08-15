@@ -332,9 +332,8 @@ class Client(FederatedTrainingDevice):
         eval_label_distribution = Counter(eval_labels)
 
         # Print the distributions
-        # if self.id % 10 == 0:
-        print(f"Train Labels client {self.id}: {train_label_distribution}")
-        print(f"Evaluation Labels client {self.id}: {eval_label_distribution}")
+        if self.id % 10 == 0:
+            print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
@@ -391,7 +390,7 @@ class Client(FederatedTrainingDevice):
             #     print('Epoch : %d, Avg Loss : %.4f'%(i, total_loss / len(dataloader)))
     
     # Client Data를 두 클래스로 분류하는 것 학습
-    def train_binary_classifier(self):
+    def train_binary_classifier(self, lr):
         self.binary_classifier = Two_class_classifier(self.model).to(device)
 
         # 1. prepare dataset
@@ -418,7 +417,7 @@ class Client(FederatedTrainingDevice):
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
         self.binary_classifier.train()
-        optimizer = torch.optim.Adam(self.binary_classifier.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(self.binary_classifier.parameters(), lr=lr)
         # print(f'client {self.id + 1} binary classification')
 
         num_labels = 2  # Since it's binary classification
@@ -459,10 +458,8 @@ class Client(FederatedTrainingDevice):
 
     
     
-    def train_classifier(self):        
-        self.classifier = Ten_class_classifier(self.model).to(device)
-        self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=1e-4)
-            
+    def train_classifier(self, lr):        
+        self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
         self.classifier.train()
@@ -485,33 +482,6 @@ class Client(FederatedTrainingDevice):
             #     print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(self.data_train)))
         
         return
-
-    def create_distill_loader(self, dataset, server_idcs, global_logits, batch_size=64):
-        transform = transforms.ToTensor()
-
-        # Extract data samples
-        data_samples = [transform(dataset[i][0]) for i in server_idcs]
-
-        # Convert list of tensors to a single tensor
-        data_samples = torch.stack(data_samples)
-
-        # Check if all logits in the rows of global_logits are -1
-        valid_indices = (global_logits != -1).any(dim=1)
-
-        # Filter out invalid samples
-        filtered_samples = data_samples[valid_indices]
-        filtered_logits = global_logits[valid_indices]
-
-        # print(f'data sample length: {len(filtered_samples)}')
-        print(f'Valid global logits length: {len(filtered_logits)}')
-        # print(f'server_idcs length: {len(server_idcs)}')
-
-        # Create the dataset
-        distill_dataset = TensorDataset(filtered_samples, filtered_logits)
-
-        self.distill_loader = DataLoader(distill_dataset, batch_size=batch_size, shuffle=True)
-
-        return 
 
     
     def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
@@ -549,45 +519,7 @@ class Client(FederatedTrainingDevice):
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
     
-    def distill(self, distill_data, epochs=20, max_grad_norm=1.0):
-        self.loss_fn = DistillationLoss()
-        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
-        copy(target=self.W_old, source=self.W)
-        
-        for g in self.optimizer.param_groups:
-            g['lr'] = 0.0005
-        # Distillation training
-        if self.distill_loader is not None:
-            for ep in range(1, epochs + 1):
-                running_loss, samples = 0.0, 0
-                for x, teacher_y in self.distill_loader:
-                    x, teacher_y = x.to(device), teacher_y.to(device)
-
-                    self.optimizer.zero_grad()
-
-                    outputs = self.model(x)
-                    loss = self.loss_fn(outputs, teacher_y)
-                    now_loss = loss.detach().item() * x.shape[0]
-
-                    running_loss += now_loss
-                    samples += x.shape[0]
-
-                    loss.backward()
-
-                    if max_grad_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
-
-                    self.optimizer.step()
-
-                if ep % 5 == 0 and self.id % 50 == 0:
-                    average_loss = running_loss / samples
-                    print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}')
-
-
-        # get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
-        return
-    
-    def distill_2(self, epochs=20):
+    def distill(self, distill_loader, epochs=20):
         # self.classifier = Ten_class_classifier(self.model).to(device)
         self.classifier.train()
         # self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=1e-4)
@@ -603,7 +535,7 @@ class Client(FederatedTrainingDevice):
         for ep in range(1, epochs + 1):
             running_loss, samples = 0.0, 0
 
-            for i, (x, teacher_y) in enumerate(self.distill_loader):
+            for i, (x, teacher_y) in enumerate(distill_loader):
                 self.optimizer.zero_grad()
                 
                 x, teacher_y = x.to(device), teacher_y.to(device)
@@ -660,43 +592,73 @@ class Server(FederatedTrainingDevice):
 
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
+    
+    def create_distill_loader(self, dataset, server_idcs, global_logits, batch_size=64):
+        transform = transforms.ToTensor()
 
-    def get_clients_logit(self, model):
-        model.eval()  # set teacher model to eval mode
+        # Extract data samples
+        data_samples = [transform(dataset[i][0]) for i in server_idcs]
+
+        # Convert list of tensors to a single tensor
+        data_samples = torch.stack(data_samples)
+
+        # Check if all logits in the rows of global_logits are -1
+        valid_indices = (global_logits != -1).any(dim=1)
+
+        # Filter out invalid samples
+        filtered_samples = data_samples[valid_indices]
+        filtered_logits = global_logits[valid_indices]
+
+        # print(f'data sample length: {len(filtered_samples)}')
+        print(f'Valid global logits length: {len(filtered_logits)}')
+        # print(f'server_idcs length: {len(server_idcs)}')
+
+        # Create the dataset
+        distill_dataset = TensorDataset(filtered_samples, filtered_logits)
+
+        distill_loader = DataLoader(distill_dataset, batch_size=batch_size, shuffle=True)
+
+        return distill_loader
+    
+    def get_clients_logit(self, classifier, major_class):
+        classifier.eval()  # set classifier to eval mode
+
         all_outputs = []
-        all_inputs = []
-        all_labels = []
-        # class_count = {}  # keep count of examples per class
 
-        with torch.no_grad():
-            for data, labels in self.loader:
-                data, labels = data.to(device), labels.to(device)
-                output = model(data)
-                # if random.random() < 1/100:
-                #     print(torch.max(output.data, 1)[:10])
-                for i in range(len(labels)):
-                    label = labels[i]
-                    all_outputs.append(output[i].unsqueeze(0))  # appending 2D tensor of shape [1, 62]
-                    all_inputs.append(data[i].unsqueeze(0))  # appending 2D tensor
-                    all_labels.append(label.unsqueeze(0))  # appending 1D tensor
+        class_correct = {i: 0 for i in major_class}  # Counter for correct predictions for each major class
+        class_total = {i: 0 for i in major_class}  # Counter for total samples of each major class
 
-        # Then convert lists of tensors into single tensors
-        all_outputs = torch.cat(all_outputs, dim=0)  # you can use torch.cat again since all tensors are 2D now
-        all_inputs = torch.cat(all_inputs, dim=0)
-        all_labels = torch.cat(all_labels, dim=0)
+        minor_correct = 0  # Counter for correct predictions for minor classes
+        minor_total = 0    # Counter for total samples of minor classes
 
+        for i, (data, labels) in enumerate(self.loader):
+            data, labels = data.to(device), labels.to(device)
 
-        # apply softmax to convert to probabilities
-        teacher_probs = torch.softmax(all_outputs, dim=1)
-        
-        # print(all_labels[0])
-        # print(teacher_probs[0])
-        
-        distill_data = (all_inputs, all_labels, teacher_probs) # prepare distill_data as a tuple
-        return distill_data  # return distill_data instead of individual arrays
+            output = classifier(data)
+            class_predictions = output.argmax(dim=1)
+
+            for i in range(len(labels)):
+                label_item = labels[i].item()
+
+                # Check for accuracy counters based on true labels
+                if label_item in major_class:
+                    class_total[label_item] += 1
+                    if class_predictions[i] == label_item:
+                        class_correct[label_item] += 1
+                else:
+                    minor_total += 1
+                    if class_predictions[i] not in major_class:
+                        minor_correct += 1
+
+                probs = torch.softmax(output[i], dim=0)
+                all_outputs.append(probs)
+
+        # Convert list of tensors into a single 2D tensor
+        all_outputs = torch.stack(all_outputs)
+
+        return all_outputs
     
-    
-    def get_clients_logit_2(self, binary_classifier, classifier, major_class):
+    def get_clients_logit_simclr(self, binary_classifier, classifier, major_class):
         binary_classifier.eval()  # set binary_classifier to eval mode
         classifier.eval()  # set classifier to eval mode
 
@@ -714,9 +676,7 @@ class Server(FederatedTrainingDevice):
             data, labels = data.to(device), labels.to(device)
 
             binary_logit = binary_classifier(data)
-            # if i % 10 == 0:
-            #     print('binary logit test output')
-            # print(binary_logit[:10])
+
             major_class_predictions = binary_logit.argmax(dim=1)
 
             for i in range(len(labels)):
@@ -751,19 +711,19 @@ class Server(FederatedTrainingDevice):
         # Convert list of tensors into a single 2D tensor
         all_outputs = torch.stack(all_outputs)
 
-        print(f"Number of samples predicted as class Major: {count_output_0}")
-        print(f"Number of samples predicted as class Minor: {count_output_1}")
+        # print(f"Number of samples predicted as class Major: {count_output_0}")
+        # print(f"Number of samples predicted as class Minor: {count_output_1}")
 
         # Print accuracy for each class in major_class
-        for class_num in major_class:
-            if class_total[class_num] != 0:
-                accuracy = class_correct[class_num] / class_total[class_num] * 100
-                print(f"Accuracy for major class {class_num}: {accuracy:.2f}%")
+        # for class_num in major_class:
+        #     if class_total[class_num] != 0:
+        #         accuracy = class_correct[class_num] / class_total[class_num] * 100
+        #         print(f"Accuracy for major class {class_num}: {accuracy:.2f}%")
 
-        # Print accuracy for minor class
-        if minor_total != 0:
-            minor_accuracy = minor_correct / minor_total * 100
-            print(f"Accuracy for minor classes: {minor_accuracy:.2f}%")
+        # # Print accuracy for minor class
+        # if minor_total != 0:
+        #     minor_accuracy = minor_correct / minor_total * 100
+        #     print(f"Accuracy for minor classes: {minor_accuracy:.2f}%")
 
         return all_outputs
 
@@ -796,18 +756,16 @@ class Server(FederatedTrainingDevice):
         global_logits[all_minus_one] = -1
         
         # print(f'shape of {global_logits.shape}')
-        print(global_logits[:10])
+       
         # print(type(global_logits))
         
         mean = global_logits.mean()
         std = global_logits.std()
         normalized_logits = (global_logits - mean) / std
 
+        # print(normalized_logits[:5])
 
         return normalized_logits.detach()
-
-
-
 
 
 
