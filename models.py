@@ -27,12 +27,13 @@ class Two_class_classifier(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.CNN = model
-        self.mlp = nn.Linear(100, 2) # Only two classes: major and minor
+        self.mlp = nn.Linear(100, 1) # Single output neuron for binary classification
 
     def forward(self, x):
         x = self.CNN(x)
         x = self.mlp(x)
-        return x
+        return x.squeeze()  # Ensure the output has the right shape
+
 
 class Ten_class_classifier(nn.Module):
     def __init__(self, model):
