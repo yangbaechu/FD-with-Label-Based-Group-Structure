@@ -502,9 +502,9 @@ class Client(FederatedTrainingDevice):
         filtered_samples = data_samples[valid_indices]
         filtered_logits = global_logits[valid_indices]
 
-        print(f'data sample length: {len(filtered_samples)}')
-        print(f'global_logits shape: {len(filtered_logits)}')
-        print(f'server_idcs length: {len(server_idcs)}')
+        # print(f'data sample length: {len(filtered_samples)}')
+        print(f'Valid global logits length: {len(filtered_logits)}')
+        # print(f'server_idcs length: {len(server_idcs)}')
 
         # Create the dataset
         distill_dataset = TensorDataset(filtered_samples, filtered_logits)
@@ -604,8 +604,9 @@ class Client(FederatedTrainingDevice):
             running_loss, samples = 0.0, 0
 
             for i, (x, teacher_y) in enumerate(self.distill_loader):
-                x, teacher_y = x.to(device), teacher_y.to(device)
                 self.optimizer.zero_grad()
+                
+                x, teacher_y = x.to(device), teacher_y.to(device)
 
                 outputs = self.classifier(x)
 
@@ -615,13 +616,13 @@ class Client(FederatedTrainingDevice):
 #                 running_loss += now_loss
 #                 samples += x.shape[0]
 
-
                 loss.backward()
 
                 # if max_grad_norm is not None:
                 #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
                 self.optimizer.step()
+                
 
             # if ep % 5 == 0 and self.id % 50 == 0:
             #     average_loss = running_loss / samples
@@ -630,47 +631,6 @@ class Client(FederatedTrainingDevice):
 
         # get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
-#     def distill(self, distill_data, epochs=40, max_grad_norm=1.0):
-#         self.loss_fn = DistillationLoss()
-#         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=512, shuffle=True)
-#         copy(target=self.W_old, source=self.W)
-        
-# #         # Freeze all the parameters
-# #         for param in self.model.parameters():
-# #             param.requires_grad = False
-
-# #         # Unfreeze the parameters of the fc layer
-# #         for param in self.model.fc.parameters():
-# #             param.requires_grad = True
-            
-#             # Update the optimizer to only update the parameters of the fc layer
-#         self.optimizer = torch.optim.Adam(self.model.fc.parameters(), lr=0.0001)
-
-#         # Distillation training
-#         if self.distill_loader is not None:
-#             for ep in range(epochs):
-#                 running_loss, samples = 0.0, 0
-#                 for x, teacher_y in self.distill_loader:
-#                     x, teacher_y = x.to(device), teacher_y.to(device)
-
-#                     self.optimizer.zero_grad()
-
-#                     outputs = self.model(x)
-#                     loss = self.loss_fn(outputs, teacher_y)
-#                     now_loss = loss.detach().item() * x.shape[0]
-
-#                     running_loss += now_loss
-#                     samples += x.shape[0]
-
-#                     loss.backward()
-
-#                     if max_grad_norm is not None:
-#                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
-
-#                     self.optimizer.step()
-
-#         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
-#         return
 
 
     def compute_weight_update(self, epochs=1, loader=None):
@@ -835,9 +795,16 @@ class Server(FederatedTrainingDevice):
         # Wherever all logits are -1, replace the aggregate value with -1
         global_logits[all_minus_one] = -1
         
-        print(f'shape of {global_logits.shape}')
+        # print(f'shape of {global_logits.shape}')
+        print(global_logits[:10])
+        # print(type(global_logits))
+        
+        mean = global_logits.mean()
+        std = global_logits.std()
+        normalized_logits = (global_logits - mean) / std
 
-        return global_logits
+
+        return normalized_logits.detach()
 
 
 
