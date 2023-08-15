@@ -388,7 +388,8 @@ class Client(FederatedTrainingDevice):
             
             # if self.id % 30 == 0:
             #     print('Epoch : %d, Avg Loss : %.4f'%(i, total_loss / len(dataloader)))
-    
+            
+        return model
     # Client Data를 두 클래스로 분류하는 것 학습
     def train_binary_classifier(self, lr):
         self.binary_classifier = Two_class_classifier(self.model).to(device)
@@ -451,10 +452,10 @@ class Client(FederatedTrainingDevice):
                 for j in range(num_labels):
                     label_correct[j] += torch.sum((predictions == j) & (labels == j)).item()
                     label_total[j] += torch.sum(labels == j).item()
-            # if i % 10 == 0:
-            #     print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
-            #     for j in range(num_labels):
-            #         print(f'Accuracy for label {j}: {label_correct[j] * 100 / label_total[j]:.2f}%')
+            if i % 5 == 0:
+                print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
+                for j in range(num_labels):
+                    print(f'Accuracy for label {j}: {label_correct[j] * 100 / label_total[j]:.2f}%')
 
     
     
