@@ -1,16 +1,16 @@
 import random
-import torch
-from torch.utils.data import DataLoader
-import numpy as np
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.cluster import DBSCAN
-from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
-import torch.nn.functional as F
-import torch.nn as nn
-from torch.utils.data import TensorDataset, DataLoader, Subset, Dataset
 from collections import defaultdict
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from sklearn.cluster import AgglomerativeClustering, DBSCAN
+from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 from sklearn.model_selection import train_test_split
-from torch.utils.data import Subset
+from torchvision import transforms
+from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
+
 from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier
 
 
@@ -392,9 +392,8 @@ class Client(FederatedTrainingDevice):
     
     # Client Data를 두 클래스로 분류하는 것 학습
     def train_binary_classifier(self):
-        
         self.binary_classifier = Two_class_classifier(self.model).to(device)
-            
+
         # 1. prepare dataset
         images = []
         targets = []
@@ -403,7 +402,6 @@ class Client(FederatedTrainingDevice):
             if target in self.major_class:
                 images.append(image)
                 targets.append(0)
-        
             else:
                 images.append(image)
                 targets.append(1)
@@ -415,33 +413,55 @@ class Client(FederatedTrainingDevice):
         # Create a TensorDataset with the selected instances and modified labels
         subset = TensorDataset(images, targets)
         class_dataloader = DataLoader(subset, batch_size=64, shuffle=True)
-                                
-        # 2. 학습 진행
+
+        # 2. Train
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
         self.binary_classifier.train()
         optimizer = torch.optim.Adam(self.binary_classifier.parameters(), lr=1e-4)
-        print(f'client {self.id + 1} binary classification')
-            
+        # print(f'client {self.id + 1} binary classification')
+
+        num_labels = 2  # Since it's binary classification
+
         for i in range(1, epochs + 1):
             correct = 0
+            label_correct = [0 for _ in range(num_labels)]
+            label_total = [0 for _ in range(num_labels)]
+            
+            # if i == epochs:
+            #        print(f'client {self.id  + 1} binary classifier\'s logit in train')
             for data, labels in class_dataloader:
                 data, labels = data.to(device), labels.to(device)
 
+                
+                
                 logits = self.binary_classifier(data)
+                # if i == epochs and self.id == 0:
+                #     print(logits[:2])
                 loss = classifier_loss(logits, labels)
-
-                optimizer.zero_grad()
+                
                 loss.backward()
                 optimizer.step()
+                optimizer.zero_grad()
 
-                correct += torch.sum(torch.argmax(logits, 1) == labels).item()
-            print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
+                predictions = torch.argmax(logits, 1)
+                correct += torch.sum(predictions == labels).item()
+
+                # Update label-wise accuracy
+                for j in range(num_labels):
+                    label_correct[j] += torch.sum((predictions == j) & (labels == j)).item()
+                    label_total[j] += torch.sum(labels == j).item()
+            
+            # if i % 10 == 0:
+            #     print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
+            #     for j in range(num_labels):
+            #         print(f'Accuracy for label {j}: {label_correct[j] * 100 / label_total[j]:.2f}%')
+
     
     
     def train_classifier(self):        
         self.classifier = Ten_class_classifier(self.model).to(device)
-        optimizer = torch.optim.Adam(self.classifier.parameters(), lr=1e-4)
+        self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=1e-4)
             
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
@@ -457,15 +477,43 @@ class Client(FederatedTrainingDevice):
                 logits = self.classifier(data)
                 loss = classifier_loss(logits, labels)
 
-                optimizer.zero_grad()
                 loss.backward()
-                optimizer.step()
-
+                self.optimizer.step()
+                self.optimizer.zero_grad()
                 correct += torch.sum(torch.argmax(logits, 1) == labels).item()
             # if self.id % 10 == 0:
             #     print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(self.data_train)))
-                
-                
+        
+        return
+
+    def create_distill_loader(self, dataset, server_idcs, global_logits, batch_size=64):
+        transform = transforms.ToTensor()
+
+        # Extract data samples
+        data_samples = [transform(dataset[i][0]) for i in server_idcs]
+
+        # Convert list of tensors to a single tensor
+        data_samples = torch.stack(data_samples)
+
+        # Check if all logits in the rows of global_logits are -1
+        valid_indices = (global_logits != -1).any(dim=1)
+
+        # Filter out invalid samples
+        filtered_samples = data_samples[valid_indices]
+        filtered_logits = global_logits[valid_indices]
+
+        print(f'data sample length: {len(filtered_samples)}')
+        print(f'global_logits shape: {len(filtered_logits)}')
+        print(f'server_idcs length: {len(server_idcs)}')
+
+        # Create the dataset
+        distill_dataset = TensorDataset(filtered_samples, filtered_logits)
+
+        self.distill_loader = DataLoader(distill_dataset, batch_size=batch_size, shuffle=True)
+
+        return 
+
+    
     def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
         copy(target=self.W_old, source=self.W)
@@ -508,7 +556,6 @@ class Client(FederatedTrainingDevice):
         
         for g in self.optimizer.param_groups:
             g['lr'] = 0.0005
-
         # Distillation training
         if self.distill_loader is not None:
             for ep in range(1, epochs + 1):
@@ -537,9 +584,52 @@ class Client(FederatedTrainingDevice):
                     print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}')
 
 
-        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+        # get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
+    
+    def distill_2(self, epochs=20):
+        # self.classifier = Ten_class_classifier(self.model).to(device)
+        self.classifier.train()
+        # self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=1e-4)
+        self.loss_fn = DistillationLoss()
 
+        # copy(target=self.W_old, source=self.W)
+        torch.autograd.set_detect_anomaly(True)
+
+        # for g in self.optimizer.param_groups:
+        #     g['lr'] = 0.0005
+        # Distillation training
+
+        for ep in range(1, epochs + 1):
+            running_loss, samples = 0.0, 0
+
+            for i, (x, teacher_y) in enumerate(self.distill_loader):
+                x, teacher_y = x.to(device), teacher_y.to(device)
+                self.optimizer.zero_grad()
+
+                outputs = self.classifier(x)
+
+                loss = self.loss_fn(outputs, teacher_y)
+#                 now_loss = loss.detach().item() * x.shape[0]
+
+#                 running_loss += now_loss
+#                 samples += x.shape[0]
+
+
+                loss.backward()
+
+                # if max_grad_norm is not None:
+                #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+
+                self.optimizer.step()
+
+            # if ep % 5 == 0 and self.id % 50 == 0:
+            #     average_loss = running_loss / samples
+            #     print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}')
+
+
+        # get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+        return
 #     def distill(self, distill_data, epochs=40, max_grad_norm=1.0):
 #         self.loss_fn = DistillationLoss()
 #         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=512, shuffle=True)
@@ -657,26 +747,39 @@ class Server(FederatedTrainingDevice):
         class_correct = {i: 0 for i in major_class}  # Counter for correct predictions for each major class
         class_total = {i: 0 for i in major_class}  # Counter for total samples of each major class
 
-        for data, labels in self.loader:
+        minor_correct = 0  # Counter for correct predictions for minor classes
+        minor_total = 0    # Counter for total samples of minor classes
+        
+        for i, (data, labels) in enumerate(self.loader):
             data, labels = data.to(device), labels.to(device)
 
             binary_logit = binary_classifier(data)
+            # if i % 10 == 0:
+            #     print('binary logit test output')
+            # print(binary_logit[:10])
             major_class_predictions = binary_logit.argmax(dim=1)
 
             for i in range(len(labels)):
+                label_item = labels[i].item()
+
+                # Count based on binary classifier's predictions
                 if major_class_predictions[i] == 0:
                     count_output_0 += 1
                 else:
                     count_output_1 += 1
 
-                label_item = labels[i].item()
-                # Update class-specific counters
+                # Now, check for accuracy counters based on true labels
                 if label_item in major_class:
                     class_total[label_item] += 1
                     if major_class_predictions[i] == 0:
                         class_correct[label_item] += 1
+                else:
+                    minor_total += 1
+                    if major_class_predictions[i] == 1:
+                        minor_correct += 1
 
                 input_data = data[i].unsqueeze(0)
+                
                 if major_class_predictions[i] == 0:  # If major class
                     output = classifier(input_data)
                     probs = torch.softmax(output, dim=1)
@@ -688,20 +791,59 @@ class Server(FederatedTrainingDevice):
         # Convert list of tensors into a single 2D tensor
         all_outputs = torch.stack(all_outputs)
 
-        print(f"Number of samples predicted as class 0: {count_output_0}")
-        print(f"Number of samples predicted as class 1: {count_output_1}")
+        print(f"Number of samples predicted as class Major: {count_output_0}")
+        print(f"Number of samples predicted as class Minor: {count_output_1}")
 
         # Print accuracy for each class in major_class
         for class_num in major_class:
             if class_total[class_num] != 0:
                 accuracy = class_correct[class_num] / class_total[class_num] * 100
-                print(f"Accuracy for class {class_num}: {accuracy:.2f}%")
+                print(f"Accuracy for major class {class_num}: {accuracy:.2f}%")
+
+        # Print accuracy for minor class
+        if minor_total != 0:
+            minor_accuracy = minor_correct / minor_total * 100
+            print(f"Accuracy for minor classes: {minor_accuracy:.2f}%")
 
         return all_outputs
 
 
 
-    
+    def get_global_logits(self, logits_list):
+        """
+        Aggregates logits from multiple models. If all models output -1 for a particular logit, 
+        then the aggregate logit will be -1 as well.
+
+        Args:
+        - logits_list (list of torch.Tensor): List of logit tensors from different models. 
+                                              All tensors should have the same shape.
+
+        Returns:
+        - global_logits (torch.Tensor): Aggregated logit tensor with -1 where all models output -1.
+        """
+
+        # Stack the logits from different models along a new dimension
+        stacked_logits = torch.stack(logits_list, dim=0)
+
+        # Check if all logits along the new dimension are -1
+        all_minus_one = (stacked_logits == -1).all(dim=0)
+
+        # For simplicity, we'll take the mean of logits as the aggregate value.
+        # This can be replaced with any other aggregation method if needed.
+        global_logits = stacked_logits.mean(dim=0)
+
+        # Wherever all logits are -1, replace the aggregate value with -1
+        global_logits[all_minus_one] = -1
+        
+        print(f'shape of {global_logits.shape}')
+
+        return global_logits
+
+
+
+
+
+
     def check_cluster(self, model):
         model.eval()
         label_predicted = defaultdict(int)  # Counts of predicted labels
