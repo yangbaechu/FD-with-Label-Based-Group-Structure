@@ -2,6 +2,7 @@ import random
 from collections import defaultdict
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -332,8 +333,8 @@ class Client(FederatedTrainingDevice):
         eval_label_distribution = Counter(eval_labels)
 
         # Print the distributions
-        if self.id % 10 == 0:
-            print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
+        # if self.id % 10 == 0:
+        print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
@@ -452,7 +453,7 @@ class Client(FederatedTrainingDevice):
                 for j in range(num_labels):
                     label_correct[j] += torch.sum((predictions == j) & (labels == j)).item()
                     label_total[j] += torch.sum(labels == j).item()
-            if i % 5 == 0:
+            if i % 5 == 0 and self.id % 10 == 0:
                 print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
                 for j in range(num_labels):
                     print(f'Accuracy for label {j}: {label_correct[j] * 100 / label_total[j]:.2f}%')
@@ -642,6 +643,69 @@ class Server(FederatedTrainingDevice):
 
         return distill_loader
     
+    def get_cluster_logits(self, client_logits, number_of_cluster):
+        # Convert the logits to predicted labels by getting the class with the maximum logit for each client
+        predicted_labels = [torch.argmax(logits, dim=1) for logits in client_logits]
+
+        # Count occurrences of each predicted label for each client
+        num_classes = client_logits[0].shape[1]
+        label_counts = torch.zeros((len(client_logits), num_classes))
+        for i, labels in enumerate(predicted_labels):
+            for label in labels:
+                label_counts[i][label] += 1
+
+        label_predicted = pd.DataFrame(label_counts.numpy())  # Convert to DataFrame for clustering
+        
+        print(f'label_predicted: {label_predicted}')
+        
+        # Cluster based on the label counts
+        cluster_idcs = self.cluster_clients_GMM(label_predicted, number_of_cluster)
+
+        # Compute the average logits for each cluster
+        cluster_logits = []
+        for cluster in cluster_idcs:
+            cluster_client_logits = [client_logits[i] for i in cluster]
+            avg_cluster_logits = torch.mean(torch.stack(cluster_client_logits), dim=0)
+            cluster_logits.append(avg_cluster_logits.detach())
+
+        return cluster_logits, cluster_idcs
+    
+    def evaluate_clustering(self, cluster_distribution, cluster_idcs):
+        print(cluster_idcs)
+        """
+        Evaluates clustering accuracy.
+
+        Args:
+        - cluster_distribution (list): List of proportions for the real clusters.
+        - cluster_idcs (list): Lists of indices for each predicted cluster.
+
+        Returns:
+        - float: Clustering accuracy
+        """
+
+        n = sum(len(cluster) for cluster in cluster_idcs)
+        start_idx = 0
+        correct_count = 0
+
+        for proportion in cluster_distribution:
+            end_idx = start_idx + int(n * proportion)
+
+            real_segment = set(range(start_idx, end_idx))
+
+            # Find the predicted cluster that has the most overlap with the real segment
+            overlaps = [len(real_segment.intersection(set(cluster))) for cluster in cluster_idcs]
+            max_overlap = max(overlaps)
+
+            correct_count += max_overlap
+            start_idx = end_idx
+
+        accuracy = correct_count / n
+        print(f"Clustering Accuracy: {accuracy * 100:.2f}%")
+        return accuracy
+
+
+
+
     def get_clients_logit(self, classifier, major_class):
         classifier.eval()  # set classifier to eval mode
 
@@ -673,6 +737,7 @@ class Server(FederatedTrainingDevice):
                         minor_correct += 1
 
                 probs = torch.softmax(output[i], dim=0)
+                # print(probs[:10])
                 all_outputs.append(probs)
 
         # Convert list of tensors into a single 2D tensor
@@ -685,21 +750,19 @@ class Server(FederatedTrainingDevice):
         classifier.eval()  # set classifier to eval mode
 
         all_outputs = []
-        count_output_0 = 0  # Counter for class 0
-        count_output_1 = 0  # Counter for class 1
-
+        
         class_correct = {i: 0 for i in major_class}  # Counter for correct predictions for each major class
-        class_total = {i: 0 for i in major_class}  # Counter for total samples of each major class
+        class_total = {i: 0 for i in major_class}    # Counter for total samples of each major class
 
         minor_correct = 0  # Counter for correct predictions for minor classes
         minor_total = 0    # Counter for total samples of minor classes
-        
+
+        count_output_0 = 0
+        count_output_1 = 0
+
         for i, (data, labels) in enumerate(self.loader):
             data, labels = data.to(device), labels.to(device)
-
             binary_logit = binary_classifier(data).squeeze()
-
-            # Convert logits to binary class predictions using sigmoid and thresholding
             major_class_predictions = (torch.sigmoid(binary_logit) > 0.5).long()
 
             for i in range(len(labels)):
@@ -731,23 +794,18 @@ class Server(FederatedTrainingDevice):
                     placeholder = torch.full((1, 10), -1).to(device)
                     all_outputs.append(placeholder.squeeze(0))
 
-
-        # Convert list of tensors into a single 2D tensor
         all_outputs = torch.stack(all_outputs)
 
         print(f"Number of samples predicted as class Major: {count_output_0}")
         print(f"Number of samples predicted as class Minor: {count_output_1}")
 
-        # Print accuracy for each class in major_class
-        # for class_num in major_class:
-        #     if class_total[class_num] != 0:
-        #         accuracy = class_correct[class_num] / class_total[class_num] * 100
-        #         print(f"Accuracy for major class {class_num}: {accuracy:.2f}%")
+        # Calculate and print the accuracies
+        major_accuracy = sum([class_correct[i] for i in major_class]) / sum([class_total[i] for i in major_class]) * 100
+        minor_accuracy = (minor_correct / minor_total) * 100 if minor_total > 0 else 0
 
-        # # Print accuracy for minor class
-        # if minor_total != 0:
-        #     minor_accuracy = minor_correct / minor_total * 100
-        #     print(f"Accuracy for minor classes: {minor_accuracy:.2f}%")
+        print(f"Accuracy for major classes: {major_accuracy:.2f}%")
+        print(f"Accuracy for minor classes: {minor_accuracy:.2f}%")
+
 
         return all_outputs
 

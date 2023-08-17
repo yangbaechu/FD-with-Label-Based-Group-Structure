@@ -153,7 +153,7 @@ def split_contain_2class(train_idcs, train_labels, n_clients, seed=123):
     return net_dataidx_map
 
 
-def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution=[0.5, 0.3, 0.2], seed=123):
+def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution, seed=123):
     
     np.random.seed(seed)
     
@@ -164,6 +164,7 @@ def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distrib
     # Number of clients per group based on the given distribution
     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
     idx_batch = [[] for _ in range(n_clients)]
+    major_class_per_client = []
     
     for group in range(n_classes // classes_per_group):
         for y in range(group * classes_per_group, (group + 1) * classes_per_group):
@@ -180,7 +181,9 @@ def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distrib
             for i in range(clients_per_group[group]):
                 client_id = sum(clients_per_group[:group]) + i
                 idx_batch[client_id] += idx_y_split[i].tolist()
-
+        
+    for i in range(clients_per_group[group]):
+        major_class_per_client.append(assigned_classes)
     net_dataidx_map = [train_idcs[np.array(idcs, dtype=int)] for idcs in idx_batch] 
     
     # # print class distribution for each client
@@ -191,7 +194,7 @@ def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distrib
     #         class_counts[train_labels[train_idcs[idx]]] += 1
     #     print(f"Client {i}: {class_counts}")
     
-    return net_dataidx_map
+    return net_dataidx_map, major_class_per_client
 
 
 # def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution=[0.5, 0.3, 0.2], seed=123):
@@ -245,7 +248,7 @@ def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_di
     n_classes = 10
     classes_per_group = 3
     data_per_class_3 = 280
-    data_per_class_7 = 120
+    data_per_class_7 = 30
 
     # Number of clients per group based on the given distribution
     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
