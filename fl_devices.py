@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 
-from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier
+from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier, Four_class_classifier
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -144,6 +144,20 @@ class MajorClassFilterDataset(Dataset):
     def __len__(self):
         return len(self.indices)
 
+class ModifiedLabelsDataset(Dataset):
+    def __init__(self, subset, major_class):
+        self.subset = subset
+        self.major_class = major_class
+        self.new_labels = {cls: idx+1 for idx, cls in enumerate(self.major_class)}
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        data, label = self.subset[idx]
+        return data, self.new_labels.get(label, 0) # Remap labels of major classes, set others to 0
+    
+    
 class SimCLR_Loss(nn.Module):
     def __init__(self, batch_size, temperature):
         super().__init__()
@@ -310,6 +324,12 @@ class Client(FederatedTrainingDevice):
 
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
+        
+        modified_data_train = ModifiedLabelsDataset(data_train, self.major_class)
+        self.new_train_loader = DataLoader(modified_data_train, batch_size=batch_size, shuffle=True)
+        
+        modified_data_eval= ModifiedLabelsDataset(data_train, self.major_class)
+        self.new_eval_loader = DataLoader(modified_data_eval, batch_size=batch_size, shuffle=True)
         
         self.id = idnum
 
@@ -488,14 +508,57 @@ class Client(FederatedTrainingDevice):
     def train_classifier(self, lr):        
         self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
         classifier_loss = nn.CrossEntropyLoss()
-        epochs = 10
+        epochs = 30
         self.classifier.train()
+
+        for i in range(1, epochs + 1):
+            correct_train = 0
+            total_loss = 0.0
+            for data, labels in self.train_loader:
+                data, labels = data.to(device), labels.to(device)
+
+                logits = self.classifier(data)
+                loss = classifier_loss(logits, labels)
+
+                loss.backward()
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+
+                # Compute training accuracy
+                _, predicted = torch.max(logits, 1)
+                correct_train += (predicted == labels).sum().item()
+                total_loss += loss.item()
+
+            train_acc = 100 * correct_train / len(self.train_loader.dataset)
+
+            # Evaluation on eval_loader
+            self.classifier.eval()  # Set the model to evaluation mode
+            correct_eval = 0
+            with torch.no_grad():
+                for data, labels in self.eval_loader:
+                    data, labels = data.to(device), labels.to(device)
+                    logits = self.classifier(data)
+                    _, predicted = torch.max(logits, 1)
+                    correct_eval += (predicted == labels).sum().item()
+
+            eval_acc = 100 * correct_eval / len(self.eval_loader.dataset)
+
+            if self.id % 10 == 7:
+                print(f'Epoch {i} - Train Loss: {total_loss / len(self.train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
+
+        return
+
+    def train_four_class_classifier(self, lr):        
+        self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
+        classifier_loss = nn.CrossEntropyLoss()
+        epochs = 10
+        self.new_train_loader.train()
         # if self.id % 10 == 0:
         #     print(f'client {self.id}')
             
         for i in range(1, epochs + 1):
             correct = 0
-            for data, labels in self.train_loader:
+            for data, labels in self.new_train_loader:
                 data, labels = data.to(device), labels.to(device)
                 
                 logits = self.classifier(data)
@@ -506,6 +569,7 @@ class Client(FederatedTrainingDevice):
                 self.optimizer.zero_grad()
         
         return
+
     
     def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)

@@ -46,6 +46,17 @@ class Ten_class_classifier(nn.Module):
         x = self.mlp(x)
         return x
     
+class Four_class_classifier(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.CNN = model
+        self.mlp = nn.Linear(100, 4)
+
+    def forward(self, x):
+        x = self.CNN(x)
+        x = self.mlp(x)
+        return x
+    
 class ConvNet(torch.nn.Module):
     def __init__(self):
         super(ConvNet, self).__init__()
