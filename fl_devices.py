@@ -3,19 +3,24 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from sklearn.cluster import AgglomerativeClustering, DBSCAN
 from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 from sklearn.model_selection import train_test_split
+from sklearn.cluster import KMeans
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
+from torch.optim.lr_scheduler import StepLR
 
 from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier, Four_class_classifier
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+step_size = 10  # This means decay the LR every 10 epochs
+gamma = 0.9
 
 
 def cutout_and_rotate(image):
@@ -309,6 +314,7 @@ class Client(FederatedTrainingDevice):
         super().__init__(model_fn, data)
 
         self.data = data
+        self.major_class = major_class
 
         # Extract the features and labels from the data
         indices = list(range(len(data)))
@@ -549,25 +555,46 @@ class Client(FederatedTrainingDevice):
         return
 
     def train_four_class_classifier(self, lr):        
-        self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
+        self.optimizer = torch.optim.Adam(self.four_class_classifier.parameters(), lr=lr)
         classifier_loss = nn.CrossEntropyLoss()
-        epochs = 10
-        self.new_train_loader.train()
-        # if self.id % 10 == 0:
-        #     print(f'client {self.id}')
-            
+        epochs = 50
+        self.four_class_classifier.train()
+
         for i in range(1, epochs + 1):
-            correct = 0
+            correct_train = 0
+            total_loss = 0.0
             for data, labels in self.new_train_loader:
                 data, labels = data.to(device), labels.to(device)
-                
-                logits = self.classifier(data)
+
+                logits = self.four_class_classifier(data)
                 loss = classifier_loss(logits, labels)
 
                 loss.backward()
                 self.optimizer.step()
                 self.optimizer.zero_grad()
-        
+
+                # Compute training accuracy
+                _, predicted = torch.max(logits, 1)
+                correct_train += (predicted == labels).sum().item()
+                total_loss += loss.item()
+
+            train_acc = 100 * correct_train / len(self.new_train_loader.dataset)
+
+            # Evaluation on eval_loader
+            self.four_class_classifier.eval()  # Set the model to evaluation mode
+            correct_eval = 0
+            with torch.no_grad():
+                for data, labels in self.new_eval_loader:
+                    data, labels = data.to(device), labels.to(device)
+                    logits = self.four_class_classifier(data)
+                    _, predicted = torch.max(logits, 1)
+                    correct_eval += (predicted == labels).sum().item()
+
+            eval_acc = 100 * correct_eval / len(self.new_eval_loader.dataset)
+
+            if self.id % 50 == 7 and i % 5 == 0:
+                print(f'Epoch {i} - Train Loss: {total_loss / len(self.new_train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
+
         return
 
     
@@ -606,10 +633,10 @@ class Client(FederatedTrainingDevice):
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
     
-    def distill(self, distill_loader, epochs=20):
+    def distill(self, distill_loader, epochs=30):
         # self.classifier = Ten_class_classifier(self.model).to(device)
         self.classifier.train()
-        # self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=1e-4)
+        # self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=2e-4)
         self.loss_fn = DistillationLoss()
 
         # copy(target=self.W_old, source=self.W)
@@ -620,20 +647,24 @@ class Client(FederatedTrainingDevice):
         # Distillation training
 
         for ep in range(1, epochs + 1):
-            running_loss, samples = 0.0, 0
+            running_loss, samples, correct_predictions = 0.0, 0, 0
 
             for i, (x, teacher_y) in enumerate(distill_loader):
                 self.optimizer.zero_grad()
-                
+
                 x, teacher_y = x.to(device), teacher_y.to(device)
 
                 outputs = self.classifier(x)
+                _, predicted = torch.max(outputs, 1)
+
+                # Count the number of correct predictions
+                correct_predictions += (predicted == teacher_y.argmax(1)).sum().item()
 
                 loss = self.loss_fn(outputs, teacher_y)
-#                 now_loss = loss.detach().item() * x.shape[0]
+                now_loss = loss.detach().item() * x.shape[0]
 
-#                 running_loss += now_loss
-#                 samples += x.shape[0]
+                running_loss += now_loss
+                samples += x.shape[0]
 
                 loss.backward()
 
@@ -641,12 +672,11 @@ class Client(FederatedTrainingDevice):
                 #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
                 self.optimizer.step()
-                
 
-            # if ep % 5 == 0 and self.id % 50 == 0:
-            #     average_loss = running_loss / samples
-            #     print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}')
-
+            if ep % 5 == 0 and self.id % 50 == 0:
+                average_loss = running_loss / samples
+                accuracy = (correct_predictions / samples) * 100  # Accuracy as a percentage
+                print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}, accuracy: {accuracy:.2f}%')
 
         # get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
@@ -697,7 +727,7 @@ class Server(FederatedTrainingDevice):
         filtered_logits = global_logits[valid_indices]
 
         # print(f'data sample length: {len(filtered_samples)}')
-        print(f'Valid global logits length: {len(filtered_logits)}')
+        # print(f'Valid global logits length: {len(filtered_logits)}')
         # print(f'server_idcs length: {len(server_idcs)}')
 
         # Create the dataset
@@ -706,6 +736,44 @@ class Server(FederatedTrainingDevice):
         distill_loader = DataLoader(distill_dataset, batch_size=batch_size, shuffle=True)
 
         return distill_loader
+    
+    def get_four_class_classifier_probabilities(self, four_class_classifier, major_class):
+        device = next(four_class_classifier.parameters()).device
+        four_class_classifier.eval()
+
+        correct_predictions = 0
+        total_major_class_samples = 0
+
+        all_adjusted_probabilities = []
+
+        for data, labels in self.loader:
+            data, labels = data.to(device), labels.to(device)
+
+            outputs = four_class_classifier(data)
+            probabilities = F.softmax(outputs, dim=1)
+            _, predicted = torch.max(outputs, 1)
+
+            # Adjust values based on the logic you provided
+            for idx, probs in enumerate(probabilities):
+                adjusted_probs = [0 for _ in range(10)]
+
+                for i, major_cls_index in enumerate(major_class):
+                    adjusted_probs[major_cls_index] = probs[i + 1].item()
+
+                all_adjusted_probabilities.append(torch.tensor(adjusted_probs))
+
+                if labels[idx].item() in major_class:
+                    total_major_class_samples += 1
+                    if major_class[predicted[idx].item() - 1] == labels[idx].item():
+                        correct_predictions += 1
+
+        accuracy = (correct_predictions / total_major_class_samples) * 100 if total_major_class_samples > 0 else 0
+        # print("Accuracy of Adjusted Probabilities (Only Major Classes): {:.2f}%".format(accuracy))
+
+        # Convert list of tensors to a 2D tensor
+        all_adjusted_probabilities_tensor = torch.stack(all_adjusted_probabilities)
+        return all_adjusted_probabilities_tensor, accuracy
+
     
     def get_cluster_logits(self, client_logits, number_of_cluster):
         # Convert the logits to predicted labels by getting the class with the maximum logit for each client
@@ -723,7 +791,7 @@ class Server(FederatedTrainingDevice):
         print(f'label_predicted: {label_predicted}')
         
         # Cluster based on the label counts
-        cluster_idcs = self.cluster_clients_GMM(label_predicted, number_of_cluster)
+        cluster_idcs = self.cluster_clients_KMeans(label_predicted, number_of_cluster)
 
         # Compute the average logits for each cluster
         cluster_logits = []
@@ -1006,6 +1074,18 @@ class Server(FederatedTrainingDevice):
         # c2 = np.argwhere(labels == 1).flatten()
         # c3 = np.argwhere(labels == 2).flatten()
         return cluster_idcs
+    
+    
+
+    def cluster_clients_KMeans(self, S, number_of_cluster):
+        kmeans = KMeans(n_clusters=number_of_cluster,  n_init=10, random_state=0)
+        labels = kmeans.fit_predict(S)
+
+        cluster_idcs = []
+        for cluster in range(number_of_cluster):
+            cluster_idcs.append(np.argwhere(labels == cluster).flatten())
+        return cluster_idcs
+
 
     def cluster_clients_BGM(self, S):
         bgm = BayesianGaussianMixture(n_components=2)
