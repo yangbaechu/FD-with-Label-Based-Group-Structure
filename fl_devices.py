@@ -31,6 +31,36 @@ def cutout_and_rotate(image):
     image[..., x_start:x_start+9, y_start:y_start+9] = 255 / 2 # 해당 부분 회색 마킹
     return torch.rot90(image, 1, [-2, -1]) # 마지막 두 axis 기준 90도 회전
 
+def cutout(image):
+    image = image.clone().detach()  
+    x_start = np.random.randint(20) 
+    y_start = np.random.randint(20) 
+    image[..., x_start:x_start+9, y_start:y_start+9] = 255 / 2
+    return image
+
+def rotate(image):
+    return torch.rot90(image, 1, [-2, -1])
+
+def color_jitter(image):
+    # This is a simple example. In practice, you would adjust brightness, contrast, saturation, etc.
+    image = image + torch.randn_like(image) * 0.1
+    image = torch.clamp(image, 0, 255)
+    return image
+
+def random_flip(image):
+    if np.random.rand() > 0.5:
+        return torch.flip(image, [-1])
+    return image
+
+AUGMENTATIONS = [cutout, rotate, color_jitter, random_flip]
+
+def apply_random_augmentations(image, num=2):
+    aug_image = image.clone().detach()
+    chosen_augs = np.random.choice(AUGMENTATIONS, size=num, replace=False)
+    for aug in chosen_augs:
+        aug_image = aug(aug_image)
+    return aug_image
+
 
 def train_op(model, loader, optimizer, epochs=1, grad_clip=None):
     model.train()
@@ -367,8 +397,8 @@ class Client(FederatedTrainingDevice):
         self.W_original = self.W
     
     # train_data 증강을 통해 Representaion Learning
-    def learn_representation(self, train_data, model):
-        
+    def learn_representation(self, train_data):
+
         batch_size = 64
         
         # Extract X_train from train_data
@@ -385,26 +415,24 @@ class Client(FederatedTrainingDevice):
         X_train_aug = X_train_aug.to(device) # 학습을 위하여 GPU에 선언
         dataset = TensorDataset(X_train, X_train_aug) # augmentation된 데이터와 pair
         
-        
-
         dataloader = DataLoader(dataset, batch_size = batch_size)
         
         loss_func = SimCLR_Loss(batch_size, temperature = 0.5) # loss 함수 선언
         
         epochs = 10
         
-        model.to(device)
-        model.train()
+        self.model.to(device)
+        self.model.train()
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-        if self.id % 10 == 0:
-            print(f'Representation Learning on Client {self.id}')
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
+        # if self.id % 10 == 0:
+        #     print(f'Representation Learning on Client {self.id}')
 
         for i in range(1, epochs + 1):
             total_loss = 0
             for data in dataloader:
-                origin_vec = model(data[0])
-                aug_vec = model(data[1])
+                origin_vec = self.model(data[0])
+                aug_vec = self.model(data[1])
 
                 loss = loss_func(origin_vec, aug_vec)
                 total_loss += loss.item()
@@ -416,7 +444,7 @@ class Client(FederatedTrainingDevice):
             # if self.id % 30 == 0:
             #     print('Epoch : %d, Avg Loss : %.4f'%(i, total_loss / len(dataloader)))
             
-        return model
+        return
     # Client Data를 두 클래스로 분류하는 것 학습
     def train_binary_classifier(self, lr):
         self.binary_classifier = Two_class_classifier(self.model).to(device)
@@ -517,6 +545,11 @@ class Client(FederatedTrainingDevice):
         epochs = 30
         self.classifier.train()
 
+        # Early stopping parameters
+        patience = 3
+        best_loss = float('inf')
+        epochs_without_improvement = 0
+
         for i in range(1, epochs + 1):
             correct_train = 0
             total_loss = 0.0
@@ -540,19 +573,35 @@ class Client(FederatedTrainingDevice):
             # Evaluation on eval_loader
             self.classifier.eval()  # Set the model to evaluation mode
             correct_eval = 0
+            eval_loss = 0.0
             with torch.no_grad():
                 for data, labels in self.eval_loader:
                     data, labels = data.to(device), labels.to(device)
                     logits = self.classifier(data)
+                    loss = classifier_loss(logits, labels)
+                    eval_loss += loss.item()
                     _, predicted = torch.max(logits, 1)
                     correct_eval += (predicted == labels).sum().item()
 
             eval_acc = 100 * correct_eval / len(self.eval_loader.dataset)
+            avg_eval_loss = eval_loss / len(self.eval_loader)
 
-            if self.id % 10 == 7:
+            # Early stopping check
+            if avg_eval_loss < best_loss:
+                best_loss = avg_eval_loss
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+
+            if epochs_without_improvement == patience:
+                print("Early stopping triggered.")
+                break
+
+            if self.id % 10 == 5:
                 print(f'Epoch {i} - Train Loss: {total_loss / len(self.train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
 
         return
+
 
     def train_four_class_classifier(self, lr):        
         self.optimizer = torch.optim.Adam(self.four_class_classifier.parameters(), lr=lr)
@@ -561,8 +610,6 @@ class Client(FederatedTrainingDevice):
         self.four_class_classifier.train()
 
         for i in range(1, epochs + 1):
-            correct_train = 0
-            total_loss = 0.0
             for data, labels in self.new_train_loader:
                 data, labels = data.to(device), labels.to(device)
 
@@ -573,27 +620,44 @@ class Client(FederatedTrainingDevice):
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-                # Compute training accuracy
-                _, predicted = torch.max(logits, 1)
-                correct_train += (predicted == labels).sum().item()
-                total_loss += loss.item()
-
-            train_acc = 100 * correct_train / len(self.new_train_loader.dataset)
-
             # Evaluation on eval_loader
             self.four_class_classifier.eval()  # Set the model to evaluation mode
-            correct_eval = 0
+
+            correct_eval_class0 = 0
+            total_class0 = 0
+            correct_eval_other_classes = 0
+            total_other_classes = 0
+
             with torch.no_grad():
                 for data, labels in self.new_eval_loader:
                     data, labels = data.to(device), labels.to(device)
                     logits = self.four_class_classifier(data)
                     _, predicted = torch.max(logits, 1)
-                    correct_eval += (predicted == labels).sum().item()
 
-            eval_acc = 100 * correct_eval / len(self.new_eval_loader.dataset)
+                    # Counters for class 0
+                    mask_class0 = (labels == 0)
+                    correct_eval_class0 += (predicted[mask_class0] == labels[mask_class0]).sum().item()
+                    total_class0 += mask_class0.sum().item()
 
-            if self.id % 50 == 7 and i % 5 == 0:
-                print(f'Epoch {i} - Train Loss: {total_loss / len(self.new_train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
+                    # Counters for other classes
+                    mask_other_classes = (labels != 0)
+                    correct_eval_other_classes += (predicted[mask_other_classes] 
+                                                   == labels[mask_other_classes]).sum().item()
+                    total_other_classes += mask_other_classes.sum().item()
+
+            if total_class0 > 0:
+                eval_acc_class0 = 100 * correct_eval_class0 / total_class0
+            else:
+                eval_acc_class0 = 0
+
+            if total_other_classes > 0:
+                eval_acc_other_classes = 100 * correct_eval_other_classes / total_other_classes
+            else:
+                eval_acc_other_classes = 0
+
+            if i % 50 == 0:
+                print(f'Epoch {i} - Eval Accuracy for Minor: {eval_acc_class0:.2f}%, '
+                      f'Eval Acc for Major: {eval_acc_other_classes:.2f}%')
 
         return
 
@@ -633,10 +697,10 @@ class Client(FederatedTrainingDevice):
         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
     
-    def distill(self, distill_loader, epochs=30):
+    def distill(self, distill_loader, epochs=50):
         # self.classifier = Ten_class_classifier(self.model).to(device)
         self.classifier.train()
-        # self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=2e-4)
+        self.optimizer = torch.optim.Adam(self.classifier.parameters())#, lr=2e-4)
         self.loss_fn = DistillationLoss()
 
         # copy(target=self.W_old, source=self.W)
@@ -673,7 +737,7 @@ class Client(FederatedTrainingDevice):
 
                 self.optimizer.step()
 
-            if ep % 5 == 0 and self.id % 50 == 0:
+            if ep % 50 == 0 and self.id % 5 == 0:
                 average_loss = running_loss / samples
                 accuracy = (correct_predictions / samples) * 100  # Accuracy as a percentage
                 print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}, accuracy: {accuracy:.2f}%')
@@ -751,6 +815,7 @@ class Server(FederatedTrainingDevice):
 
             outputs = four_class_classifier(data)
             probabilities = F.softmax(outputs, dim=1)
+            # print(f'probabilities[0]: {probabilities[0]}')
             _, predicted = torch.max(outputs, 1)
 
             # Adjust values based on the logic you provided
@@ -759,6 +824,7 @@ class Server(FederatedTrainingDevice):
 
                 for i, major_cls_index in enumerate(major_class):
                     adjusted_probs[major_cls_index] = probs[i + 1].item()
+                # print(f'adjusted_probs[0]: {adjusted_probs}')
 
                 all_adjusted_probabilities.append(torch.tensor(adjusted_probs))
 
@@ -768,10 +834,11 @@ class Server(FederatedTrainingDevice):
                         correct_predictions += 1
 
         accuracy = (correct_predictions / total_major_class_samples) * 100 if total_major_class_samples > 0 else 0
-        # print("Accuracy of Adjusted Probabilities (Only Major Classes): {:.2f}%".format(accuracy))
+        print("Accuracy of Adjusted Probabilities (Only Major Classes): {:.2f}%".format(accuracy))
 
         # Convert list of tensors to a 2D tensor
         all_adjusted_probabilities_tensor = torch.stack(all_adjusted_probabilities)
+        # print(all_adjusted_probabilities_tensor[:10])
         return all_adjusted_probabilities_tensor, accuracy
 
     
@@ -869,7 +936,7 @@ class Server(FederatedTrainingDevice):
                         minor_correct += 1
 
                 probs = torch.softmax(output[i], dim=0)
-                # print(probs[:10])
+                # print(f'probs[0]: {probs[0]}')
                 all_outputs.append(probs)
 
         # Convert list of tensors into a single 2D tensor
@@ -944,42 +1011,24 @@ class Server(FederatedTrainingDevice):
 
 
     def get_global_logits(self, logits_list):
-        """
-        Aggregates logits from multiple models. If all models output -1 for a particular logit, 
-        then the aggregate logit will be -1 as well.
-
-        Args:
-        - logits_list (list of torch.Tensor): List of logit tensors from different models. 
-                                              All tensors should have the same shape.
-
-        Returns:
-        - global_logits (torch.Tensor): Aggregated logit tensor with -1 where all models output -1.
-        """
-
         # Stack the logits from different models along a new dimension
         stacked_logits = torch.stack(logits_list, dim=0)
 
         # Check if all logits along the new dimension are -1
         all_minus_one = (stacked_logits == -1).all(dim=0)
 
-        # For simplicity, we'll take the mean of logits as the aggregate value.
-        # This can be replaced with any other aggregation method if needed.
-        global_logits = stacked_logits.mean(dim=0)
+        # Compute the mean of the logits across the models
+        mean_logits = stacked_logits.mean(dim=0)
 
-        # Wherever all logits are -1, replace the aggregate value with -1
+        # Normalize the logits using softmax so the sum is 1
+        global_logits = F.softmax(mean_logits, dim=-1)
+
+        # Set to -1 where all models output -1
         global_logits[all_minus_one] = -1
-        
-        # print(f'shape of {global_logits.shape}')
-       
-        # print(type(global_logits))
-        
-        mean = global_logits.mean()
-        std = global_logits.std()
-        normalized_logits = (global_logits - mean) / std
 
-        # print(normalized_logits[:5])
+        # print(global_logits[:10])
 
-        return normalized_logits.detach()
+        return global_logits.detach()
 
 
 
