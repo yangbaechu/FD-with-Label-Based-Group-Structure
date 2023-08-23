@@ -381,16 +381,16 @@ class Client(FederatedTrainingDevice):
         self.major_class_dataset = MajorClassFilterDataset(data_train, self.major_class)
         self.major_class_dataloader = DataLoader(self.major_class_dataset, batch_size=32, shuffle=True)
         
-        train_labels = [label for _, label in data_train]
-        eval_labels = [label for _, label in data_eval]
+#         train_labels = [label for _, label in data_train]
+#         eval_labels = [label for _, label in data_eval]
         
-        # Compute the distribution using Counter
-        train_label_distribution = Counter(train_labels)
-        eval_label_distribution = Counter(eval_labels)
+#         # Compute the distribution using Counter
+#         train_label_distribution = Counter(train_labels)
+#         eval_label_distribution = Counter(eval_labels)
 
-        # Print the distributions
-        # if self.id % 10 == 0:
-        print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
+#         # Print the distributions
+#         # if self.id % 10 == 0:
+#         print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
@@ -471,21 +471,17 @@ class Client(FederatedTrainingDevice):
 
         # 2. Train
         loss_fn = torch.nn.BCEWithLogitsLoss()
-        epochs = 10
+        epochs = 30
         self.binary_classifier.train()
         optimizer = torch.optim.Adam(self.binary_classifier.parameters(), lr=lr)
-        
-        # print(f'client {self.id + 1} binary classification')
 
         num_labels = 2  # Since it's binary classification
-        
-        for i in range(1, epochs + 1):
-            correct = 0
-            label_correct = [0 for _ in range(num_labels)]
-            label_total = [0 for _ in range(num_labels)]
 
-            # if i == epochs:
-            #     print(f'client {self.id  + 1} binary classifier\'s logit in train')
+        for i in range(1, epochs + 1):
+            TP = 0  # True Positives
+            TN = 0  # True Negatives
+            FP = 0  # False Positives
+            FN = 0  # False Negatives
 
             for data, labels in class_dataloader:
                 data, labels = data.to(device), labels.to(device)
@@ -501,16 +497,21 @@ class Client(FederatedTrainingDevice):
 
                 # Convert logits to probabilities using sigmoid and then threshold at 0.5 for predictions
                 predictions = (torch.sigmoid(logits) > 0.5).long()
-                correct += torch.sum(predictions == labels).item()
 
-                # Update label-wise accuracy
-                for j in range(num_labels):
-                    label_correct[j] += torch.sum((predictions == j) & (labels == j)).item()
-                    label_total[j] += torch.sum(labels == j).item()
+                # Update counts for TP, TN, FP, FN
+                TP += torch.sum((predictions == 1) & (labels == 1)).item()
+                TN += torch.sum((predictions == 0) & (labels == 0)).item()
+                FP += torch.sum((predictions == 1) & (labels == 0)).item()
+                FN += torch.sum((predictions == 0) & (labels == 1)).item()
+
+            # Calculate Precision, Recall, and F1-Score
+            precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+            recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+            f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
             if i % 5 == 0 and self.id % 10 == 0:
-                print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(subset)))
-                for j in range(num_labels):
-                    print(f'Accuracy for label {j}: {label_correct[j] * 100 / label_total[j]:.2f}%')
+                print(f'Epoch : {i}, Precision : {precision:.2f}, Recall : {recall:.2f}, F1-Score : {f1_score:.2f}')
+
 
     
     
@@ -597,7 +598,7 @@ class Client(FederatedTrainingDevice):
                 print("Early stopping triggered.")
                 break
 
-            if self.id % 10 == 5:
+            if self.id % 10 == 5 and i % 5 == 0:
                 print(f'Epoch {i} - Train Loss: {total_loss / len(self.train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
 
         return
@@ -737,7 +738,7 @@ class Client(FederatedTrainingDevice):
 
                 self.optimizer.step()
 
-            if ep % 50 == 0 and self.id % 5 == 0:
+            if ep % 5 == 0 and self.id % 5 == 0:
                 average_loss = running_loss / samples
                 accuracy = (correct_predictions / samples) * 100  # Accuracy as a percentage
                 print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}, accuracy: {accuracy:.2f}%')
@@ -949,15 +950,11 @@ class Server(FederatedTrainingDevice):
         classifier.eval()  # set classifier to eval mode
 
         all_outputs = []
-        
-        class_correct = {i: 0 for i in major_class}  # Counter for correct predictions for each major class
-        class_total = {i: 0 for i in major_class}    # Counter for total samples of each major class
 
-        minor_correct = 0  # Counter for correct predictions for minor classes
-        minor_total = 0    # Counter for total samples of minor classes
-
-        count_output_0 = 0
-        count_output_1 = 0
+        TP = 0  # True Positives
+        FP = 0  # False Positives
+        FN = 0  # False Negatives
+        TN = 0  # True Negatives
 
         for i, (data, labels) in enumerate(self.loader):
             data, labels = data.to(device), labels.to(device)
@@ -967,21 +964,16 @@ class Server(FederatedTrainingDevice):
             for i in range(len(labels)):
                 label_item = labels[i].item()
 
-                # Count based on binary classifier's predictions
-                if major_class_predictions[i] == 0:
-                    count_output_0 += 1
-                else:
-                    count_output_1 += 1
-
-                # Now, check for accuracy counters based on true labels
-                if label_item in major_class:
-                    class_total[label_item] += 1
-                    if major_class_predictions[i] == 0:
-                        class_correct[label_item] += 1
-                else:
-                    minor_total += 1
-                    if major_class_predictions[i] == 1:
-                        minor_correct += 1
+                if label_item in major_class:  # If the actual label is major class
+                    if major_class_predictions[i] == 0:  # Correct prediction
+                        TP += 1
+                    else:  # False negative
+                        FN += 1
+                else:  # If the actual label is minor class
+                    if major_class_predictions[i] == 1:  # Correct prediction
+                        TN += 1
+                    else:  # False positive
+                        FP += 1
 
                 input_data = data[i].unsqueeze(0)
 
@@ -995,18 +987,15 @@ class Server(FederatedTrainingDevice):
 
         all_outputs = torch.stack(all_outputs)
 
-        print(f"Number of samples predicted as class Major: {count_output_0}")
-        print(f"Number of samples predicted as class Minor: {count_output_1}")
+        # Calculate precision, recall and F1-score
+        precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+        recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
 
-        # Calculate and print the accuracies
-        major_accuracy = sum([class_correct[i] for i in major_class]) / sum([class_total[i] for i in major_class]) * 100
-        minor_accuracy = (minor_correct / minor_total) * 100 if minor_total > 0 else 0
-
-        print(f"Accuracy for major classes: {major_accuracy:.2f}%")
-        print(f"Accuracy for minor classes: {minor_accuracy:.2f}%")
-
+        print(f"Precision: {precision:.2f}, Recall: {recall:.2f}, F1-Score: {f1_score:.2f}")
 
         return all_outputs
+
 
 
 
