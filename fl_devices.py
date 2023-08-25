@@ -7,6 +7,7 @@ from sklearn.cluster import AgglomerativeClustering, DBSCAN
 from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 from sklearn.model_selection import train_test_split
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 
 import torch
 import torch.nn as nn
@@ -738,10 +739,10 @@ class Client(FederatedTrainingDevice):
 
                 self.optimizer.step()
 
-            if ep % 5 == 0 and self.id % 5 == 0:
-                average_loss = running_loss / samples
-                accuracy = (correct_predictions / samples) * 100  # Accuracy as a percentage
-                print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}, accuracy: {accuracy:.2f}%')
+            # if ep % 5 == 0 and self.id % 5 == 0:
+            #     average_loss = running_loss / samples
+            #     accuracy = (correct_predictions / samples) * 100  # Accuracy as a percentage
+            #     print(f'distill epoch {ep}, averaged loss: {average_loss:.4f}, accuracy: {accuracy:.2f}%')
 
         # get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
@@ -868,40 +869,31 @@ class Server(FederatedTrainingDevice):
             avg_cluster_logits = torch.mean(torch.stack(cluster_client_logits), dim=0)
             cluster_logits.append(avg_cluster_logits.detach())
 
-        return cluster_logits, cluster_idcs
+        return cluster_logits, cluster_idcs, label_predicted
     
-    def evaluate_clustering(self, cluster_distribution, cluster_idcs):
-        print(cluster_idcs)
+    def evaluate_clustering(self, data, cluster_idcs):
         """
-        Evaluates clustering accuracy.
+        Evaluates clustering using silhouette score.
 
         Args:
-        - cluster_distribution (list): List of proportions for the real clusters.
+        - data (array-like): Original data points.
         - cluster_idcs (list): Lists of indices for each predicted cluster.
 
         Returns:
-        - float: Clustering accuracy
+        - float: Silhouette score
         """
 
-        n = sum(len(cluster) for cluster in cluster_idcs)
-        start_idx = 0
-        correct_count = 0
+        # Create labels based on cluster indices
+        labels = [None] * len(data)
+        for cluster_label, cluster in enumerate(cluster_idcs):
+            for idx in cluster:
+                labels[idx] = cluster_label
 
-        for proportion in cluster_distribution:
-            end_idx = start_idx + int(n * proportion)
+        # Compute the silhouette score
+        score = silhouette_score(data, labels)
 
-            real_segment = set(range(start_idx, end_idx))
-
-            # Find the predicted cluster that has the most overlap with the real segment
-            overlaps = [len(real_segment.intersection(set(cluster))) for cluster in cluster_idcs]
-            max_overlap = max(overlaps)
-
-            correct_count += max_overlap
-            start_idx = end_idx
-
-        accuracy = correct_count / n
-        print(f"Clustering Accuracy: {accuracy * 100:.2f}%")
-        return accuracy
+        print(f"Silhouette Score: {score:.2f}")
+        return score
 
 
 
