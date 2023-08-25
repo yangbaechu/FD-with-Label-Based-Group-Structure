@@ -242,13 +242,13 @@ def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distrib
 #     return net_dataidx_map
 
 # version that return major_class information
-def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution, seed=123):
+def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution, data_per_class_3, data_per_class_7, seed=123):
     np.random.seed(seed)
     
     n_classes = 10
     classes_per_group = 3
-    data_per_class_3 = 98
-    data_per_class_7 = 21
+    # data_per_class_3 = 133
+    # data_per_class_7 = 14
 
     # Number of clients per group based on the given distribution
     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]

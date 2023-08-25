@@ -7,7 +7,7 @@ from sklearn.cluster import AgglomerativeClustering, DBSCAN
 from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 from sklearn.model_selection import train_test_split
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, adjusted_rand_score
 
 import torch
 import torch.nn as nn
@@ -370,8 +370,8 @@ class Client(FederatedTrainingDevice):
         
         self.id = idnum
 
-        self.dW = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
-        self.W_old = {key: torch.zeros_like(value) for key, value in self.model.named_parameters()}
+        self.dW = {key: torch.zeros_like(value) for key, value in self.classifier.named_parameters()}
+        self.W_old = {key: torch.zeros_like(value) for key, value in self.classifier.named_parameters()}
 
         self.loss_fn = ClusterDistillationLoss()
         
@@ -516,7 +516,8 @@ class Client(FederatedTrainingDevice):
 
     
     
-    def train_classifier_simclr(self, lr):        
+    def train_classifier_simclr(self, lr):     
+        copy(target=self.W_old, source=self.W)
         self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 10
@@ -538,10 +539,11 @@ class Client(FederatedTrainingDevice):
                 correct += torch.sum(torch.argmax(logits, 1) == labels).item()
             if self.id % 10 == 0:
                 print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(self.major_class_dataset)))
-        
+        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
         return
 
     def train_classifier(self, lr):        
+        copy(target=self.W_old, source=self.W)
         self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
         classifier_loss = nn.CrossEntropyLoss()
         epochs = 30
@@ -601,7 +603,9 @@ class Client(FederatedTrainingDevice):
 
             if self.id % 10 == 5 and i % 5 == 0:
                 print(f'Epoch {i} - Train Loss: {total_loss / len(self.train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
-
+                
+        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+        
         return
 
 
@@ -871,29 +875,41 @@ class Server(FederatedTrainingDevice):
 
         return cluster_logits, cluster_idcs, label_predicted
     
-    def evaluate_clustering(self, data, cluster_idcs):
+    def evaluate_clustering(self, data, cluster_distribution, cluster_idcs):
         """
-        Evaluates clustering using silhouette score.
+        Evaluates clustering using silhouette score and adjusted rand index (ARI).
 
         Args:
         - data (array-like): Original data points.
+        - cluster_distribution (list): List of proportions for the real clusters.
         - cluster_idcs (list): Lists of indices for each predicted cluster.
 
         Returns:
-        - float: Silhouette score
+        - tuple: (Silhouette score, ARI score)
         """
 
         # Create labels based on cluster indices
-        labels = [None] * len(data)
+        predicted_labels = [None] * len(data)
         for cluster_label, cluster in enumerate(cluster_idcs):
             for idx in cluster:
-                labels[idx] = cluster_label
+                predicted_labels[idx] = cluster_label
+
+        # Generate true labels based on cluster_distribution
+        n = len(data)
+        start_idx = 0
+        true_labels = []
+        for proportion in cluster_distribution:
+            end_idx = start_idx + int(n * proportion)
+            true_labels.extend([start_idx] * (end_idx - start_idx))
+            start_idx = end_idx
 
         # Compute the silhouette score
-        score = silhouette_score(data, labels)
+        silhouette = silhouette_score(data, predicted_labels)
+        # Compute the ARI score
+        ari = adjusted_rand_score(true_labels, predicted_labels)
+        # print(f"Adjusted Rand Index: {ari:.2f}, Silhouette Score: {silhouette:.2f}")
 
-        print(f"Silhouette Score: {score:.2f}")
-        return score
+        return silhouette, ari
 
 
 
