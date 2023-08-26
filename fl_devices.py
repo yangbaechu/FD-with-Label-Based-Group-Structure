@@ -1,5 +1,6 @@
 import random
 from collections import defaultdict
+from copy import deepcopy
 
 import numpy as np
 import pandas as pd
@@ -132,13 +133,15 @@ def refine_as_not_true(logits, targets, num_classes):
 
 
 def copy(target, source):
-    for name in target:
-        target[name].data = source[name].data.clone()
+    target_copy = deepcopy(source)
+    target.update(target_copy)
 
-
-def get_dW(target, minuend, subtrahend):
+def get_dW(target, subtrahend):
+    difference = {}
     for name in target:
-        target[name].data += minuend[name].data.clone() - subtrahend[name].data.clone()
+        difference[name] = target[name].data.clone() - subtrahend[name].data.clone()
+    return difference
+
 
 
 def reduce_add_average(targets, sources):
@@ -164,7 +167,7 @@ def pairwise_angles(sources):
                 torch.norm(s1) * torch.norm(s2) + 1e-12
             )
 
-    return angles.numpy()
+    return angles.detach().numpy()
 
 class MajorClassFilterDataset(Dataset):
     def __init__(self, dataset, major_classes):
@@ -343,7 +346,7 @@ class ClusterDistillationLoss(nn.Module):
 class Client(FederatedTrainingDevice):
     def __init__(self, model_fn, data, major_class, idnum, batch_size=128, train_frac=0.7):
         super().__init__(model_fn, data)
-
+        self.classifier = Ten_class_classifier(self.model).to(device)
         self.data = data
         self.major_class = major_class
 
@@ -514,34 +517,6 @@ class Client(FederatedTrainingDevice):
                 print(f'Epoch : {i}, Precision : {precision:.2f}, Recall : {recall:.2f}, F1-Score : {f1_score:.2f}')
 
 
-    
-    
-    def train_classifier_simclr(self, lr):     
-        copy(target=self.W_old, source=self.W)
-        self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
-        classifier_loss = nn.CrossEntropyLoss()
-        epochs = 10
-        self.classifier.train()
-        # if self.id % 10 == 0:
-        #     print(f'client {self.id}')
-            
-        for i in range(1, epochs + 1):
-            correct = 0
-            for data, labels in self.major_class_dataloader:
-                data, labels = data.to(device), labels.to(device)
-                
-                logits = self.classifier(data)
-                loss = classifier_loss(logits, labels)
-
-                loss.backward()
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                correct += torch.sum(torch.argmax(logits, 1) == labels).item()
-            if self.id % 10 == 0:
-                print('Epoch : %d, Train Accuracy : %.2f%%' % (i, correct * 100 / len(self.major_class_dataset)))
-        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
-        return
-
     def train_classifier(self, lr):        
         copy(target=self.W_old, source=self.W)
         self.optimizer = torch.optim.Adam(self.classifier.parameters(), lr=lr)
@@ -604,7 +579,7 @@ class Client(FederatedTrainingDevice):
             if self.id % 10 == 5 and i % 5 == 0:
                 print(f'Epoch {i} - Train Loss: {total_loss / len(self.train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
                 
-        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+        self.dW = get_dW(target=self.W, subtrahend=self.W_old)
         
         return
 
@@ -775,8 +750,9 @@ from collections import Counter
 class Server(FederatedTrainingDevice):
     def __init__(self, model_fn, optimizer_fn, data): 
         super().__init__(model_fn, data)
+        self.classifier = Ten_class_classifier(self.model).to(device)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
-
+        
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
     
