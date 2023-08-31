@@ -46,43 +46,6 @@ def split_noniid(train_idcs, train_labels, alpha, n_clients, seed=123):
 
 
 
-# def split_contain_every_class(train_idcs, train_labels, n_clients, data_per_class, Imbalance_ratio):
-#     """
-#     Splits a list of data indices with corresponding labels
-#     into subsets according to deterministic rule
-#     """
-
-#     data_per_class = data_per_class
-#     n_cluster = 3
-#     client_per_cluster = 3
-#     n_class = 20
-#     Imbalance_ratio = Imbalance_ratio
-#     client_idcs = [[] for _ in range(n_clients)]
-
-#     class_idcs = [
-#         np.where(train_labels == c)[0].tolist()[:4000] for c in range(n_class)
-#     ]
-
-#     for c in range(n_cluster):
-#         for client in range(client_per_cluster):
-#             # split indices for class c across clients for that class
-#             idx = []
-#             for class_num, class_index in enumerate(class_idcs):
-#                 start = (n_cluster * 3 + n_clients) * data_per_class
-#                 end = start + data_per_class
-#                 # Allocate 2 times more data of class 0, 1, 2 to cluster 1 and so on
-#                 if class_num // 3 == c:
-#                     end += int(data_per_class * (Imbalance_ratio - 1))
-#                 idx.extend(class_index[start:end])
-
-#             client_idcs[client + c * client_per_cluster] += idx
-
-#     # Convert to numpy array
-#     client_idcs = [np.array(idcs) for idcs in client_idcs]
-
-#     return client_idcs
-
-
 def split_2class_plus_alpha(train_idcs, train_labels, n_clients, seed=123):
     np.random.seed(seed)
 
@@ -143,13 +106,6 @@ def split_contain_2class(train_idcs, train_labels, n_clients, seed=123):
 
     net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
     
-    print("Class distribution per client:")
-    for i, idcs in enumerate(idx_batch):
-        class_counts = {label:0 for label in range(n_classes)}
-        for idx in idcs:
-            class_counts[train_labels[train_idcs[idx]]] += 1
-        print(f"Client {i}: {class_counts}")
-    
     return net_dataidx_map
 
 
@@ -196,50 +152,6 @@ def split_3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distrib
     
     return net_dataidx_map, major_class_per_client
 
-
-# def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution=[0.5, 0.3, 0.2], seed=123):
-#     np.random.seed(seed)
-    
-#     n_classes = 10
-#     classes_per_group = 3
-#     data_per_class_3 = 50
-#     data_per_class_7 = 10
-
-#     # Number of clients per group based on the given distribution
-#     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
-#     idx_batch = [[] for _ in range(n_clients)]
-    
-#     for group in range(n_classes // classes_per_group):
-#         assigned_classes = list(range(group * classes_per_group, (group + 1) * classes_per_group))
-#         remaining_classes = [i for i in range(n_classes) if i not in assigned_classes]
-
-#         # Distributing the first 3 classes
-#         for y in assigned_classes:
-#             if y >= n_classes:
-#                 continue
-#             idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs, dtype=int)] == y).flatten().tolist()
-#             np.random.shuffle(idx_y)
-#             idx_y = idx_y[:data_per_class_3 * clients_per_group[group]]  
-            
-#             idx_y_split = np.array_split(idx_y, clients_per_group[group])
-#             for i in range(clients_per_group[group]):
-#                 client_id = sum(clients_per_group[:group]) + i
-#                 idx_batch[client_id] += idx_y_split[i].tolist()
-
-#         # Distributing the remaining 7 classes for this group
-#         for y in remaining_classes:
-#             idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs, dtype=int)] == y).flatten().tolist()
-#             np.random.shuffle(idx_y)
-#             idx_y = idx_y[:data_per_class_7 * clients_per_group[group]] 
-            
-#             idx_y_split = np.array_split(idx_y, clients_per_group[group])
-#             for i in range(clients_per_group[group]):
-#                 client_id = sum(clients_per_group[:group]) + i
-#                 idx_batch[client_id] += idx_y_split[i].tolist()
-
-#     net_dataidx_map = [train_idcs[np.array(idcs, dtype=int)] for idcs in idx_batch] 
-    
-#     return net_dataidx_map
 
 # version that return major_class information
 def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_distribution, data_per_class_3, data_per_class_7, seed=123):

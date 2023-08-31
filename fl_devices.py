@@ -344,11 +344,11 @@ class ClusterDistillationLoss(nn.Module):
         return cluster_loss + global_loss
 
 class Client(FederatedTrainingDevice):
-    def __init__(self, model_fn, data, major_class, idnum, batch_size=128, train_frac=0.7):
+    def __init__(self, model_fn, data, idnum, batch_size=128, train_frac=0.7):
         super().__init__(model_fn, data)
         self.classifier = Ten_class_classifier(self.model).to(device)
         self.data = data
-        self.major_class = major_class
+        # self.major_class = major_class
 
         # Extract the features and labels from the data
         indices = list(range(len(data)))
@@ -365,11 +365,11 @@ class Client(FederatedTrainingDevice):
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
         
-        modified_data_train = ModifiedLabelsDataset(data_train, self.major_class)
-        self.new_train_loader = DataLoader(modified_data_train, batch_size=batch_size, shuffle=True)
+#         modified_data_train = ModifiedLabelsDataset(data_train, self.major_class)
+#         self.new_train_loader = DataLoader(modified_data_train, batch_size=batch_size, shuffle=True)
         
-        modified_data_eval= ModifiedLabelsDataset(data_train, self.major_class)
-        self.new_eval_loader = DataLoader(modified_data_eval, batch_size=batch_size, shuffle=True)
+#         modified_data_eval= ModifiedLabelsDataset(data_train, self.major_class)
+#         self.new_eval_loader = DataLoader(modified_data_eval, batch_size=batch_size, shuffle=True)
         
         self.id = idnum
 
@@ -378,23 +378,23 @@ class Client(FederatedTrainingDevice):
 
         self.loss_fn = ClusterDistillationLoss()
         
-        self.major_class = major_class
-        self.minor_class = [i for i in range(10) if i not in self.major_class]
+#         self.major_class = major_class
+#         self.minor_class = [i for i in range(10) if i not in self.major_class]
         
-        # Assuming you have defined self.major_class and data_train
-        self.major_class_dataset = MajorClassFilterDataset(data_train, self.major_class)
-        self.major_class_dataloader = DataLoader(self.major_class_dataset, batch_size=32, shuffle=True)
+#         # Assuming you have defined self.major_class and data_train
+#         self.major_class_dataset = MajorClassFilterDataset(data_train, self.major_class)
+#         self.major_class_dataloader = DataLoader(self.major_class_dataset, batch_size=32, shuffle=True)
         
-#         train_labels = [label for _, label in data_train]
-#         eval_labels = [label for _, label in data_eval]
+        train_labels = [label for _, label in data_train]
+        eval_labels = [label for _, label in data_eval]
         
-#         # Compute the distribution using Counter
-#         train_label_distribution = Counter(train_labels)
-#         eval_label_distribution = Counter(eval_labels)
+        # Compute the distribution using Counter
+        train_label_distribution = Counter(train_labels)
+        eval_label_distribution = Counter(eval_labels)
 
 #         # Print the distributions
 #         # if self.id % 10 == 0:
-#         print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
+        print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
