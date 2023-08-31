@@ -838,7 +838,6 @@ class Server(FederatedTrainingDevice):
         label_predicted = pd.DataFrame(label_counts.numpy())  # Convert to DataFrame for clustering
         
         print(f'label_predicted: {label_predicted}')
-        
         # Cluster based on the label counts
         cluster_idcs = self.cluster_clients_KMeans(label_predicted, number_of_cluster)
 
@@ -890,16 +889,13 @@ class Server(FederatedTrainingDevice):
 
 
 
-    def get_clients_logit(self, classifier, major_class):
+    def get_clients_logit(self, classifier):
         classifier.eval()  # set classifier to eval mode
 
         all_outputs = []
 
-        class_correct = {i: 0 for i in major_class}  # Counter for correct predictions for each major class
-        class_total = {i: 0 for i in major_class}  # Counter for total samples of each major class
-
-        minor_correct = 0  # Counter for correct predictions for minor classes
-        minor_total = 0    # Counter for total samples of minor classes
+        class_correct = {}  # Counter for correct predictions for each class
+        class_total = {}    # Counter for total samples of each class
 
         for i, (data, labels) in enumerate(self.loader):
             data, labels = data.to(device), labels.to(device)
@@ -910,24 +906,24 @@ class Server(FederatedTrainingDevice):
             for i in range(len(labels)):
                 label_item = labels[i].item()
 
-                # Check for accuracy counters based on true labels
-                if label_item in major_class:
-                    class_total[label_item] += 1
-                    if class_predictions[i] == label_item:
-                        class_correct[label_item] += 1
-                else:
-                    minor_total += 1
-                    if class_predictions[i] not in major_class:
-                        minor_correct += 1
+                # Initialize counters if the class is encountered for the first time
+                if label_item not in class_total:
+                    class_total[label_item] = 0
+                    class_correct[label_item] = 0
+
+                class_total[label_item] += 1
+
+                if class_predictions[i] == label_item:
+                    class_correct[label_item] += 1
 
                 probs = torch.softmax(output[i], dim=0)
-                # print(f'probs[0]: {probs[0]}')
                 all_outputs.append(probs)
 
         # Convert list of tensors into a single 2D tensor
         all_outputs = torch.stack(all_outputs)
 
         return all_outputs
+
     
     def get_clients_logit_simclr(self, binary_classifier, classifier, major_class):
         binary_classifier.eval()  # set binary_classifier to eval mode
@@ -1071,13 +1067,19 @@ class Server(FederatedTrainingDevice):
         return pairwise_angles([client.dW for client in clients])
 
     def cluster_clients(self, S):
+        # Fit the hierarchical clustering model
         clustering = AgglomerativeClustering(
             affinity="precomputed", linkage="complete"
         ).fit(-S)
 
-        c1 = np.argwhere(clustering.labels_ == 0).flatten()
-        c2 = np.argwhere(clustering.labels_ == 1).flatten()
-        return c1, c2
+        number_of_clusters = clustering.n_clusters_
+
+        # Get the cluster indices
+        cluster_indices = []
+        for cluster in range(number_of_clusters):
+            cluster_indices.append(np.argwhere(clustering.labels_ == cluster).flatten())
+
+        return cluster_indices, number_of_clusters
 
     def cluster_clients_DBSCAN(self, S):
         clustering = DBSCAN(eps=1.5, min_samples=1).fit(-S)  # eps 0.8 ~ 1로 test

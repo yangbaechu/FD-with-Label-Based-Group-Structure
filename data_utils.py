@@ -84,27 +84,31 @@ def split_2class_plus_alpha(train_idcs, train_labels, n_clients, seed=123):
     return net_dataidx_map
 
 
-def split_contain_2class(train_idcs, train_labels, n_clients, seed=123):
+def split_contain_2class(train_idcs, train_labels, n_clients, instances_per_class, instances_per_class_per_client, seed=123):
     
     np.random.seed(seed)
     
     n_classes = 10
-
-    clients_per_class = n_clients // (n_classes // 2)
+    
+    num_groups = len(instances_per_class_per_client)
+    assert n_clients % num_groups == 0, "Total number of clients must be divisible by the number of groups"
+    
+    clients_per_group = n_clients // num_groups
+    
     idx_batch = [[] for _ in range(n_clients)]
-    for y in range(n_classes):
-        idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist()
-        np.random.shuffle(idx_y)
-        
-        # Split indices of the same class into multiple chunks
-        idx_y_split = np.array_split(idx_y, clients_per_class)
-
-        # Assign each chunk to a different client
-        for i in range(clients_per_class):
-            client_id = (y // 2) * clients_per_class + i
-            idx_batch[client_id] += idx_y_split[i].tolist()
-
-    net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch] 
+    
+    client_id = 0
+    for class1, class2 in instances_per_class_per_client:
+        for _ in range(clients_per_group):
+            for y in [class1, class2]:
+                idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist()
+                np.random.shuffle(idx_y)
+                
+                idx_batch[client_id] += idx_y[:instances_per_class]
+            
+            client_id += 1
+            
+    net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch]
     
     return net_dataidx_map
 
