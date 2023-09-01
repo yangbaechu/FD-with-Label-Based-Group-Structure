@@ -385,16 +385,16 @@ class Client(FederatedTrainingDevice):
 #         self.major_class_dataset = MajorClassFilterDataset(data_train, self.major_class)
 #         self.major_class_dataloader = DataLoader(self.major_class_dataset, batch_size=32, shuffle=True)
         
-        train_labels = [label for _, label in data_train]
-        eval_labels = [label for _, label in data_eval]
+#         train_labels = [label for _, label in data_train]
+#         eval_labels = [label for _, label in data_eval]
         
-        # Compute the distribution using Counter
-        train_label_distribution = Counter(train_labels)
-        eval_label_distribution = Counter(eval_labels)
+#         # Compute the distribution using Counter
+#         train_label_distribution = Counter(train_labels)
+#         eval_label_distribution = Counter(eval_labels)
 
-#         # Print the distributions
-#         # if self.id % 10 == 0:
-        print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
+# #         # Print the distributions
+# #         # if self.id % 10 == 0:
+#         print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
