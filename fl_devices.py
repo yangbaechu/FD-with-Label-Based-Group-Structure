@@ -576,8 +576,8 @@ class Client(FederatedTrainingDevice):
                 # print("Early stopping triggered.")
                 break
 
-            if self.id % 100 == 5 and i % 5 == 0:
-                print(f'Epoch {i} - Train Loss: {total_loss / len(self.train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
+            # if self.id % 100 == 5 and i % 5 == 0:
+            #     print(f'Epoch {i} - Train Loss: {total_loss / len(self.train_loader):.4f}, Train Accuracy: {train_acc:.2f}%, Eval Accuracy: {eval_acc:.2f}%')
                 
         self.dW = get_dW(target=self.W, subtrahend=self.W_old)
         
