@@ -9,6 +9,7 @@ from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 from sklearn.model_selection import train_test_split
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score
+from sklearn.preprocessing import MinMaxScaler
 
 import torch
 import torch.nn as nn
@@ -824,7 +825,7 @@ class Server(FederatedTrainingDevice):
         return all_adjusted_probabilities_tensor, accuracy
 
     
-    def get_cluster_logits(self, client_logits, number_of_cluster):
+    def get_cluster_logits(self, client_logits, number_of_cluster, t):
         # Convert the logits to predicted labels by getting the class with the maximum logit for each client
         predicted_labels = [torch.argmax(logits, dim=1) for logits in client_logits]
 
@@ -837,9 +838,9 @@ class Server(FederatedTrainingDevice):
 
         label_predicted = pd.DataFrame(label_counts.numpy())  # Convert to DataFrame for clustering
         
-        print(f'label_predicted: {label_predicted}')
+        # print(f'label_predicted: {label_predicted}')
         # Cluster based on the label counts
-        cluster_idcs = self.cluster_clients_KMeans(label_predicted, number_of_cluster)
+        cluster_idcs = self.cluster_clients_Hierarchical(label_predicted, number_of_cluster, t)
 
         # Compute the average logits for each cluster
         cluster_logits = []
@@ -869,6 +870,9 @@ class Server(FederatedTrainingDevice):
             for idx in cluster:
                 predicted_labels[idx] = cluster_label
 
+        # Check the number of unique labels
+        unique_labels = np.unique([label for label in predicted_labels if label is not None])
+
         # Generate true labels based on cluster_distribution
         n = len(data)
         start_idx = 0
@@ -878,10 +882,15 @@ class Server(FederatedTrainingDevice):
             true_labels.extend([start_idx] * (end_idx - start_idx))
             start_idx = end_idx
 
-        # Compute the silhouette score
-        silhouette = silhouette_score(data, predicted_labels)
         # Compute the ARI score
         ari = adjusted_rand_score(true_labels, predicted_labels)
+
+        # Compute the silhouette score only if there is more than one unique label
+        if len(unique_labels) > 1:
+            silhouette = silhouette_score(data, predicted_labels)
+        else:
+            silhouette = np.nan  # Set to nan if only one unique label
+
         # print(f"Adjusted Rand Index: {ari:.2f}, Silhouette Score: {silhouette:.2f}")
 
         return silhouette, ari
@@ -1109,7 +1118,30 @@ class Server(FederatedTrainingDevice):
         for cluster in range(number_of_cluster):
             cluster_idcs.append(np.argwhere(labels == cluster).flatten())
         return cluster_idcs
+    
+    def cluster_clients_Hierarchical(self, S, number_of_cluster, t):
+        # Step 2: Normalize the data using Min-Max scaling
+        scaler = MinMaxScaler()
+        S_normalized = scaler.fit_transform(S)
+        # print('S_normalized')
+        # print(S_normalized)
+        # Step 1 & 3: Initialize AgglomerativeClustering with distance_threshold=0.5 and n_clusters=None
+        agglomerative_clustering = AgglomerativeClustering(distance_threshold=t, n_clusters=None)
 
+        # Fit the model and get labels
+        labels = agglomerative_clustering.fit_predict(S_normalized)
+        print(labels)
+        # Find the unique labels to identify the number of clusters formed
+        unique_labels = np.unique(labels)
+
+        # Initialize list to store indices for each cluster
+        cluster_idcs = []
+
+        # Populate cluster indices
+        for cluster in unique_labels:
+            cluster_idcs.append(np.argwhere(labels == cluster).flatten())
+
+        return cluster_idcs
 
     def cluster_clients_BGM(self, S):
         bgm = BayesianGaussianMixture(n_components=2)
