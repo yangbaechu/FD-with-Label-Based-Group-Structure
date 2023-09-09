@@ -875,14 +875,28 @@ class Server(FederatedTrainingDevice):
 
         # Generate true labels based on cluster_distribution
         n = len(data)
-        start_idx = 0
         true_labels = []
-        for proportion in cluster_distribution:
-            end_idx = start_idx + int(n * proportion)
+        start_idx = 0
+        remaining_clients = n
+
+        for proportion in cluster_distribution[:-1]:
+            end_idx = start_idx + round(n * proportion)
+
+            # Prevent the last cluster from having zero clients
+            if remaining_clients - end_idx == 0:
+                end_idx -= 1
+
             true_labels.extend([start_idx] * (end_idx - start_idx))
+            remaining_clients -= (end_idx - start_idx)
             start_idx = end_idx
 
+        # For the last cluster, use the remaining clients
+        true_labels.extend([start_idx] * remaining_clients)
+
         # Compute the ARI score
+        print(len(true_labels))
+        print(len(predicted_labels))
+        
         ari = adjusted_rand_score(true_labels, predicted_labels)
 
         # Compute the silhouette score only if there is more than one unique label
