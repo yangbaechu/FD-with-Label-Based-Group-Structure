@@ -256,7 +256,6 @@ def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_di
 #     return client_idcs
 
 
-
 def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     
     n_class = 10
@@ -280,9 +279,6 @@ def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     server_idcs = np.array(server_idcs)
 
     return server_idcs
-
-
-
 
 
 class CustomSubset(Subset):

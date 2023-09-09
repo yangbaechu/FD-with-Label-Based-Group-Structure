@@ -18,7 +18,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torch.optim.lr_scheduler import StepLR
 
-from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier, Four_class_classifier
+from models import ConvNet, Representation, Ten_class_classifier, Four_class_classifier
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -753,7 +753,7 @@ class Server(FederatedTrainingDevice):
         super().__init__(model_fn, data)
         self.classifier = Ten_class_classifier(self.model).to(device)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
-        
+        print(len(self.loader))
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
     
@@ -892,10 +892,6 @@ class Server(FederatedTrainingDevice):
 
         # For the last cluster, use the remaining clients
         true_labels.extend([start_idx] * remaining_clients)
-
-        # Compute the ARI score
-        print(len(true_labels))
-        print(len(predicted_labels))
         
         ari = adjusted_rand_score(true_labels, predicted_labels)
 
@@ -1137,8 +1133,8 @@ class Server(FederatedTrainingDevice):
         # Step 2: Normalize the data using Min-Max scaling
         scaler = MinMaxScaler()
         S_normalized = scaler.fit_transform(S)
-        # print('S_normalized')
-        # print(S_normalized)
+        print('S_normalized')
+        print(S_normalized)
         # Step 1 & 3: Initialize AgglomerativeClustering with distance_threshold=0.5 and n_clusters=None
         agglomerative_clustering = AgglomerativeClustering(distance_threshold=t, n_clusters=None)
 
