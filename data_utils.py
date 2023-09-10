@@ -84,24 +84,26 @@ def split_2class_plus_alpha(train_idcs, train_labels, n_clients, seed=123):
     return net_dataidx_map
 
 
-def split_contain_multiclass(train_idcs, train_labels, n_clients, instances_per_class, instances_per_class_per_client, seed=123):
+def split_contain_multiclass(train_idcs, train_labels, n_clients, instances_per_class, instances_per_class_per_client, cluster_distribution, seed=123):
     
     np.random.seed(seed)
     
     n_classes = 10  # You may want to make this a parameter or calculate it based on the data
     
     num_groups = len(instances_per_class_per_client)
-    assert n_clients % num_groups == 0, "Total number of clients must be divisible by the number of groups"
+    print(f'num_groups: {num_groups}')
+    # assert n_clients % num_groups == 0, "Total number of clients must be divisible by the number of groups"
     
-    clients_per_group = n_clients // num_groups
-    
+
     idx_batch = [[] for _ in range(n_clients)]
+   
     
     client_id = 0
-    
+    print(cluster_distribution)
+       
     # Assuming each group in instances_per_class_per_client has the same number of classes
-    for class_group in instances_per_class_per_client:
-        for _ in range(clients_per_group):
+    for i, class_group in enumerate(instances_per_class_per_client):
+        for _ in range(int(cluster_distribution[i] * n_clients)):
             for y in class_group:
                 idx_y = np.argwhere(np.array(train_labels)[np.array(train_idcs)] == y).flatten().tolist()
                 np.random.shuffle(idx_y)
@@ -109,7 +111,6 @@ def split_contain_multiclass(train_idcs, train_labels, n_clients, instances_per_
                 idx_batch[client_id] += idx_y[:instances_per_class]
                 
             client_id += 1
-            
     net_dataidx_map = [train_idcs[np.array(idcs)] for idcs in idx_batch]
     
     return net_dataidx_map
@@ -165,8 +166,8 @@ def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_di
     
     n_classes = 10
     classes_per_group = 3
-    # data_per_class_3 = 100
-    # data_per_class_7 = 14
+    data_per_class_3 = 100
+    data_per_class_7 = 14
 
     # Number of clients per group based on the given distribution
     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
@@ -256,6 +257,7 @@ def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_di
 #     return client_idcs
 
 
+
 def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     
     n_class = 10
@@ -279,6 +281,9 @@ def generate_server_idcs(test_idcs, test_labels, target_class_data_count):
     server_idcs = np.array(server_idcs)
 
     return server_idcs
+
+
+
 
 
 class CustomSubset(Subset):
