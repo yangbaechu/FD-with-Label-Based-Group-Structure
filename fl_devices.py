@@ -18,7 +18,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torch.optim.lr_scheduler import StepLR
 
-from models import ConvNet, Representation, Ten_class_classifier, Four_class_classifier
+from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier, Four_class_classifier
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -753,7 +753,7 @@ class Server(FederatedTrainingDevice):
         super().__init__(model_fn, data)
         self.classifier = Ten_class_classifier(self.model).to(device)
         self.loader = DataLoader(self.data, batch_size=128, shuffle=False, pin_memory=True)
-        print(len(self.loader))
+        
         self.model_cache = []
         self.optimizer = optimizer_fn(self.model.parameters())
     
@@ -873,26 +873,19 @@ class Server(FederatedTrainingDevice):
         # Check the number of unique labels
         unique_labels = np.unique([label for label in predicted_labels if label is not None])
 
-        # Generate true labels based on cluster_distribution
         n = len(data)
-        true_labels = []
         start_idx = 0
-        remaining_clients = n
-
-        for proportion in cluster_distribution[:-1]:
-            end_idx = start_idx + round(n * proportion)
-
-            # Prevent the last cluster from having zero clients
-            if remaining_clients - end_idx == 0:
-                end_idx -= 1
-
-            true_labels.extend([start_idx] * (end_idx - start_idx))
-            remaining_clients -= (end_idx - start_idx)
+        true_labels = []
+        current_label = 0  # Initialize current label to 0
+        for proportion in cluster_distribution:
+            end_idx = start_idx + int(n * proportion)
+            true_labels.extend([current_label] * (end_idx - start_idx))
             start_idx = end_idx
+            current_label += 1  # Increment the label for the next cluster
 
-        # For the last cluster, use the remaining clients
-        true_labels.extend([start_idx] * remaining_clients)
-        
+        # Compute the ARI score
+        print(f'predicted_labels: {predicted_labels}')
+        print(f'true_labels: {true_labels}')
         ari = adjusted_rand_score(true_labels, predicted_labels)
 
         # Compute the silhouette score only if there is more than one unique label
@@ -1133,8 +1126,8 @@ class Server(FederatedTrainingDevice):
         # Step 2: Normalize the data using Min-Max scaling
         scaler = MinMaxScaler()
         S_normalized = scaler.fit_transform(S)
-        print('S_normalized')
-        print(S_normalized)
+        # print('S_normalized')
+        # print(S_normalized)
         # Step 1 & 3: Initialize AgglomerativeClustering with distance_threshold=0.5 and n_clusters=None
         agglomerative_clustering = AgglomerativeClustering(distance_threshold=t, n_clusters=None)
 

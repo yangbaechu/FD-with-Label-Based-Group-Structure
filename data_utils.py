@@ -166,9 +166,9 @@ def split_7plus3class_unbalanced(train_idcs, train_labels, n_clients, cluster_di
     
     n_classes = 10
     classes_per_group = 3
-    data_per_class_3 = 100
-    data_per_class_7 = 14
-
+    # data_per_class_3 = 100
+    # data_per_class_7 = 14
+    print(f'data_per_class_3: {data_per_class_3}, data_per_class_7: {data_per_class_7}')
     # Number of clients per group based on the given distribution
     clients_per_group = [int(dist * n_clients) for dist in cluster_distribution]
     idx_batch = [[] for _ in range(n_clients)]
