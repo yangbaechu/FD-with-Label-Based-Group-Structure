@@ -874,6 +874,7 @@ class Server(FederatedTrainingDevice):
         unique_labels = np.unique([label for label in predicted_labels if label is not None])
 
         n = len(data)
+        print(n)
         start_idx = 0
         true_labels = []
         current_label = 0  # Initialize current label to 0
