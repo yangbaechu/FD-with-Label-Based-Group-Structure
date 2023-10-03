@@ -18,7 +18,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torch.optim.lr_scheduler import StepLR
 
-from models import ConvNet, Representation, Two_class_classifier, Ten_class_classifier, Four_class_classifier
+from models import ConvNet, Representation, Ten_class_classifier, Four_class_classifier
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
