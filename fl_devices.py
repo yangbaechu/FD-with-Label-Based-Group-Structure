@@ -359,10 +359,13 @@ class Client(FederatedTrainingDevice):
         train_indices, eval_indices, _, _ = train_test_split(indices, labels, train_size=train_frac, stratify=labels)
         
         # Create subsets using the split indices
+        # print(f'train_daat_len: {len(train_indices)}')
+        # print(f'train_daat_len: {len(eval_indices)}')
         data_train = Subset(data, train_indices)
         data_eval = Subset(data, eval_indices)
         self.data_train = data_train
-
+       
+        
         self.train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         self.eval_loader = DataLoader(data_eval, batch_size=batch_size, shuffle=False)
         
