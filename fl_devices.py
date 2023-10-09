@@ -381,24 +381,6 @@ class Client(FederatedTrainingDevice):
         self.W_old = {key: torch.zeros_like(value) for key, value in self.classifier.named_parameters()}
 
         self.loss_fn = ClusterDistillationLoss()
-        
-#         self.major_class = major_class
-#         self.minor_class = [i for i in range(10) if i not in self.major_class]
-        
-#         # Assuming you have defined self.major_class and data_train
-#         self.major_class_dataset = MajorClassFilterDataset(data_train, self.major_class)
-#         self.major_class_dataloader = DataLoader(self.major_class_dataset, batch_size=32, shuffle=True)
-        
-#         train_labels = [label for _, label in data_train]
-#         eval_labels = [label for _, label in data_eval]
-        
-#         # Compute the distribution using Counter
-#         train_label_distribution = Counter(train_labels)
-#         eval_label_distribution = Counter(eval_labels)
-
-# #         # Print the distributions
-# #         # if self.id % 10 == 0:
-#         print(f"Labels in client {self.id}: {train_label_distribution + eval_label_distribution}")
 
     def synchronize_with_server(self, server):
         copy(target=self.W, source=server.W)
@@ -647,41 +629,84 @@ class Client(FederatedTrainingDevice):
         return
 
     
-    def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
-        self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
-        copy(target=self.W_old, source=self.W)
+#     def dual_distill(self, distill_data, epochs=40, max_grad_norm=1.0):
+#         print(f"Type of distill_data: {type(distill_data)}")
+#         for i, item in enumerate(distill_data):
+#             print(f"Type of distill_data[{i}] is {type(item)}")
         
-        for g in self.optimizer.param_groups:
-            g['lr'] = 0.0002
+#         self.distill_loader = DataLoader(TensorDataset(*distill_data), batch_size=128, shuffle=True)
+#         copy(target=self.W_old, source=self.W)
 
-        # Distillation training
-        if self.distill_loader is not None:
-            for ep in range(epochs):
-                running_loss, samples = 0.0, 0
-                for x, cluster_logit, global_logit in self.distill_loader:
-                    x, cluster_logit, global_logit = x.to(device), cluster_logit.to(device), global_logit.to(device)
 
-                    self.optimizer.zero_grad()
+#         # Distillation training
+#         if self.distill_loader is not None:
+#             for ep in range(epochs):
+#                 running_loss, samples = 0.0, 0
+#                 for x, cluster_logit, global_logit in self.distill_loader:
+#                     x, cluster_logit, global_logit = x.to(device), cluster_logit.to(device), global_logit.to(device)
 
-                    outputs = self.model(x)
-                    loss = self.loss_fn(outputs, cluster_logit, global_logit)
-                    now_loss = loss.detach().item() * x.shape[0]
+#                     self.optimizer.zero_grad()
 
-                    running_loss += now_loss
-                    # if ep % 10 == 0:
-                    #     print(f'loss: {now_loss}')
-                    samples += x.shape[0]
+#                     outputs = self.model(x)
+#                     loss = self.loss_fn(outputs, cluster_logit, global_logit)
+#                     now_loss = loss.detach().item() * x.shape[0]
 
-                    loss.backward()
+#                     running_loss += now_loss
+#                     # if ep % 10 == 0:
+#                     #     print(f'loss: {now_loss}')
+#                     samples += x.shape[0]
+
+#                     loss.backward()
                     
-                    if max_grad_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+#                     if max_grad_norm is not None:
+#                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
-                    self.optimizer.step()
+#                     self.optimizer.step()
 
-        get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
-        return
+#         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
+#         return
     
+    def dual_distill(self, distill_loader, epochs=50):
+        self.classifier.train()
+        self.optimizer = torch.optim.Adam(self.classifier.parameters())
+        self.loss_fn = DistillationLoss()  # Make sure this loss function can handle dual logits
+
+        for ep in range(1, epochs + 1):
+            running_loss, samples, correct_predictions = 0.0, 0, 0
+
+            for i, (x, cluster_teacher_y, global_teacher_y) in enumerate(distill_loader):
+                self.optimizer.zero_grad()
+
+                x = x.to(device)
+                cluster_teacher_y = cluster_teacher_y.to(device)
+                global_teacher_y = global_teacher_y.to(device)
+
+                outputs = self.classifier(x)
+                _, predicted = torch.max(outputs, 1)
+
+                # Count the number of correct predictions
+                # Here, you might need to decide how to compare predictions to teacher labels
+                correct_predictions += (predicted == global_teacher_y.argmax(1)).sum().item()
+
+                # Calculate the dual distillation loss here
+                # You might want to update your loss function to take two types of teacher logits
+                loss = self.loss_fn(outputs, cluster_teacher_y, global_teacher_y)
+                now_loss = loss.detach().item() * x.shape[0]
+
+                running_loss += now_loss
+                samples += x.shape[0]
+
+                loss.backward()
+                self.optimizer.step()
+
+            # Optionally, print logs
+            # if ep % 5 == 0:
+            #     average_loss = running_loss / samples
+            #     accuracy = (correct_predictions / samples) * 100  # Accuracy as a percentage
+            #     print(f'dual_distill epoch {ep}, averaged loss: {average_loss:.4f}, accuracy: {accuracy:.2f}%')
+
+        return
+
     def distill(self, distill_loader, epochs=50):
         # self.classifier = Ten_class_classifier(self.model).to(device)
         self.classifier.train()
@@ -787,6 +812,39 @@ class Server(FederatedTrainingDevice):
 
         return distill_loader
     
+    
+    def create_dual_distill_loader(self, dataset, server_idcs, cluster_logits, global_logits, batch_size=64):
+        transform = transforms.ToTensor()
+
+        # Extract data samples
+        data_samples = [transform(dataset[i][0]) for i in server_idcs]
+
+        # Convert list of tensors to a single tensor
+        data_samples = torch.stack(data_samples)
+
+        # Check if all logits in the rows of global_logits and cluster_logits are -1
+        valid_global_indices = (global_logits != -1).any(dim=1)
+        valid_cluster_indices = (cluster_logits != -1).any(dim=1)
+
+        # Combine the valid indices for both global and cluster logits
+        valid_indices = valid_global_indices & valid_cluster_indices
+
+        # Filter out invalid samples
+        filtered_samples = data_samples[valid_indices]
+        filtered_global_logits = global_logits[valid_indices]
+        filtered_cluster_logits = cluster_logits[valid_indices]
+
+        # Create the dataset
+        # filtered_cluster_logits = torch.Tensor(filtered_cluster_logits)
+
+        distill_dataset = TensorDataset(filtered_samples, filtered_cluster_logits, filtered_global_logits)
+
+        distill_loader = DataLoader(distill_dataset, batch_size=batch_size, shuffle=True)
+
+        return distill_loader
+
+    
+        
     def get_four_class_classifier_probabilities(self, four_class_classifier, major_class):
         device = next(four_class_classifier.parameters()).device
         four_class_classifier.eval()
@@ -887,9 +945,9 @@ class Server(FederatedTrainingDevice):
             start_idx = end_idx
             current_label += 1  # Increment the label for the next cluster
 
-        # Compute the ARI score
-        print(f'predicted_labels: {predicted_labels}')
-        print(f'true_labels: {true_labels}')
+        # # Compute the ARI score
+        # print(f'predicted_labels: {predicted_labels}')
+        # print(f'true_labels: {true_labels}')
         ari = adjusted_rand_score(true_labels, predicted_labels)
 
         # Compute the silhouette score only if there is more than one unique label
