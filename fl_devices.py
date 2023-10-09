@@ -669,7 +669,7 @@ class Client(FederatedTrainingDevice):
     def dual_distill(self, distill_loader, epochs=50):
         self.classifier.train()
         self.optimizer = torch.optim.Adam(self.classifier.parameters())
-        self.loss_fn = DistillationLoss()  # Make sure this loss function can handle dual logits
+        self.loss_fn = ClusterDistillationLoss()  # Make sure this loss function can handle dual logits
 
         for ep in range(1, epochs + 1):
             running_loss, samples, correct_predictions = 0.0, 0, 0
