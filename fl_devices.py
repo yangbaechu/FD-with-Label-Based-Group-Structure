@@ -320,11 +320,11 @@ class ClusterDistillationLoss(nn.Module):
         self.alpha = alpha
         self.T = T
 
-    def forward(self, student_outputs, cluster_logits, global_logits, weight_for_class=None, labels=None):
+    def forward(self, student_outputs, cluster_logits, global_logits, cluster_weight=None, labels=None):
         # hard_loss = F.cross_entropy(student_outputs, labels) * (1 - self.alpha)
         # print(f'hard loss: {hard_loss}')
-        if weight_for_class:
-            cluster_loss = weight_for_class * self.alpha * F.kl_div(
+        if cluster_weight:
+            cluster_loss = cluster_weight * self.alpha * F.kl_div(
                 F.log_softmax(student_outputs / self.T, dim=1),
                 F.softmax(cluster_logits / self.T, dim=1),
                 reduction="batchmean",
@@ -666,7 +666,7 @@ class Client(FederatedTrainingDevice):
 #         get_dW(target=self.dW, minuend=self.W, subtrahend=self.W_old)
 #         return
     
-    def dual_distill(self, distill_loader, epochs=50):
+    def dual_distill(self, distill_loader, silhouette, epochs=50):
         self.classifier.train()
         self.optimizer = torch.optim.Adam(self.classifier.parameters())
         self.loss_fn = ClusterDistillationLoss()  # Make sure this loss function can handle dual logits
@@ -690,7 +690,8 @@ class Client(FederatedTrainingDevice):
 
                 # Calculate the dual distillation loss here
                 # You might want to update your loss function to take two types of teacher logits
-                loss = self.loss_fn(outputs, cluster_teacher_y, global_teacher_y)
+                weight = max(0, (silhouette-0.5)*2)
+                loss = self.loss_fn(outputs, cluster_teacher_y, global_teacher_y, weight)
                 now_loss = loss.detach().item() * x.shape[0]
 
                 running_loss += now_loss
